@@ -680,12 +680,19 @@ main {
 .room-list {
   display: grid;
   gap: 10px;
-  height: min(68dvh, 760px);
-  min-height: 360px;
+  max-height: min(68dvh, 760px);
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-right: 4px;
   scrollbar-gutter: stable;
+}
+
+.lobby-lower-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.72fr);
+  gap: 12px;
+  margin-top: 12px;
+  align-items: stretch;
 }
 
 .room-card {
@@ -871,6 +878,34 @@ main {
   gap: 9px;
   max-height: 340px;
   overflow: hidden;
+}
+
+.giveaway-placeholder-panel {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 10px;
+  min-height: 180px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--primary) 14%, transparent), color-mix(in srgb, var(--pink) 18%, transparent)),
+    var(--panel-solid);
+}
+
+.giveaway-placeholder-panel h2 {
+  margin: 0;
+  color: var(--page-text);
+  font-size: 18px;
+  line-height: 1.25;
+}
+
+.giveaway-placeholder-panel > div {
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  text-align: center;
+  border: 1px dashed color-mix(in srgb, var(--primary) 45%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-soft) 76%, transparent);
+  padding: 14px;
 }
 
 .name-war-loser-panel:has(.empty) {
@@ -3128,13 +3163,16 @@ main {
   }
 
   .room-list {
-    height: min(56dvh, 520px);
-    min-height: 280px;
+    max-height: min(56dvh, 520px);
   }
 
   .join-box {
     width: 100%;
     min-width: 0;
+  }
+
+  .lobby-lower-grid {
+    grid-template-columns: 1fr;
   }
 
   .leaderboard-panel {

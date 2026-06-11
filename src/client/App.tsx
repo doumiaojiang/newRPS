@@ -461,9 +461,18 @@ function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lo
           ))}
           {lobby.rooms.length === 0 && <p className="empty">还没有房间，先创建一个吧。</p>}
         </div>
+        <div className="lobby-lower-grid">
+          <NameWarLoserPanel title={config.nameWar.loserPanelTitle} losers={nameWarLosers} me={me} onError={onError} />
+          <div className="panel giveaway-placeholder-panel">
+            <h2>🎁 白给内容</h2>
+            <div>
+              <strong>开发中</strong>
+              <p className="hint">这里先预留给明天要放的白给玩法、活动或说明内容。</p>
+            </div>
+          </div>
+        </div>
       </div>
       <aside className="side-column">
-        <NameWarLoserPanel title={config.nameWar.loserPanelTitle} losers={nameWarLosers} me={me} onError={onError} />
         <Leaderboard title="在线积分榜" players={lobby.rankedLeaderboard} />
         <div className="panel lobby-message-board">
           <h2><MessageCircle size={18} /> 留言板</h2>
