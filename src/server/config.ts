@@ -132,6 +132,12 @@ function normalizeConfig(input: AppConfig): AppConfig {
   }));
   return {
     ...input,
+    site: {
+      ...input.site,
+      name: String(input.site?.name || "").trim(),
+      description: String(input.site?.description || ""),
+      adminPassword: String(process.env.ADMIN_PASSWORD || input.site?.adminPassword || "").trim()
+    },
     genderFactions,
     genders,
     titles,
@@ -262,7 +268,7 @@ function assertHexColor(value: string, label: string) {
 // 而是为了避免管理工具把 JSON 写坏后，整个服务器启动不了。
 export function validateConfig(input: AppConfig) {
   input = normalizeConfig(input);
-  if (!input.site?.name || !input.site?.adminPassword) throw new Error("网站名称和管理员口令不能为空");
+  if (!input.site?.name) throw new Error("网站名称不能为空");
   if (!Array.isArray(input.genders) || input.genders.length === 0) throw new Error("至少需要一个性别选项");
   if (!Array.isArray(input.genderFactions) || input.genderFactions.length === 0) throw new Error("至少需要一个性别阵营");
   assertUnique(input.genderFactions.map((faction) => faction.id), "阵营 ID");

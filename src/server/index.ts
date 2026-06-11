@@ -111,6 +111,10 @@ function saveVerifiedImage(file: Express.Multer.File, bucket: "proofs" | "admin"
   return `/uploads/${bucket}/${filename}`;
 }
 
+function adminPasswordMatches(password: unknown) {
+  return Boolean(config.site.adminPassword && String(password || "") === config.site.adminPassword);
+}
+
 const imageUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 8 * 1024 * 1024 },
@@ -138,7 +142,7 @@ app.post("/api/proof-image", (req, res) => {
 app.post("/api/admin-image", (req, res) => {
   imageUpload.single("image")(req, res, (error) => {
     if (error) return res.status(400).json({ message: "图片上传失败，请确认格式为 jpg/png/webp 且小于 8MB" });
-    if (String(req.body.password || "") !== config.site.adminPassword) return res.status(403).json({ message: "管理员口令不正确" });
+    if (!adminPasswordMatches(req.body.password)) return res.status(403).json({ message: "管理员口令不正确或尚未设置" });
     if (!req.file) return res.status(400).json({ message: "图片格式不支持或图片为空" });
     try {
       res.json({ imageUrl: saveVerifiedImage(req.file, "admin") });
@@ -1301,7 +1305,7 @@ io.on("connection", (socket) => {
 
   socket.on("admin:login", ({ password }: { password: string }, reply) => {
     const player = getPlayer(socket.id);
-    if (password !== config.site.adminPassword) return reply?.({ error: "管理员口令不正确" });
+    if (!adminPasswordMatches(password)) return reply?.({ error: "管理员口令不正确或尚未设置" });
     adminSocketIds.add(socket.id);
     if (player) player.isAdmin = true;
     reply?.({ ok: true });
@@ -1392,7 +1396,7 @@ io.on("connection", (socket) => {
 
   socket.on("config:get", (_payload, reply) => reply?.({ config }));
   socket.on("config:save", ({ password, nextConfig }: { password: string; nextConfig: AppConfig }, reply) => {
-    if (password !== config.site.adminPassword) return reply?.({ error: "管理员口令不正确" });
+    if (!adminPasswordMatches(password)) return reply?.({ error: "管理员口令不正确或尚未设置" });
     try {
       config = saveConfig(nextConfig);
       refreshAllPlayersForConfig();
@@ -1404,7 +1408,7 @@ io.on("connection", (socket) => {
     }
   });
   socket.on("config:reset", ({ password }: { password: string }, reply) => {
-    if (password !== config.site.adminPassword) return reply?.({ error: "管理员口令不正确" });
+    if (!adminPasswordMatches(password)) return reply?.({ error: "管理员口令不正确或尚未设置" });
     config = resetConfig();
     refreshAllPlayersForConfig();
     reply?.({ config });
