@@ -1527,9 +1527,11 @@ io.on("connection", (socket) => {
     const room = player?.roomId ? rooms.get(player.roomId) : undefined;
     if (!player || !room) return reply?.({ error: "你不在房间中" });
     if (room.phase === "punishment") return reply?.({ error: "惩罚完成前不能切换座位" });
-    if (room.phase === "choosing" && (room.choices.A || room.choices.B)) return reply?.({ error: "本局已经有人出拳，暂时不能换座" });
     if (room.seats[seat]) return reply?.({ error: "这个战斗席已经有人了" });
     const oldSeat = seatOf(room, player.id);
+    // 如果本局已经有人出拳，已坐下的玩家不能换座躲避本局。
+    // 但空战斗席仍允许观战/新加入玩家补位，否则会出现“一边已出拳，另一边空位永远坐不上”的卡房间问题。
+    if (oldSeat && room.phase === "choosing" && (room.choices.A || room.choices.B)) return reply?.({ error: "本局已经有人出拳，暂时不能换座" });
     if (oldSeat) {
       clearSeatForPlayer(room, oldSeat);
     }
