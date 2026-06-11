@@ -905,9 +905,23 @@ main {
   order: 1;
   flex-direction: row;
   align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   position: relative;
   overflow: hidden;
   isolation: isolate;
+}
+
+.room-header > div {
+  min-width: 0;
+}
+
+.room-header h2 {
+  overflow-wrap: anywhere;
+}
+
+.room-header .soft-button {
+  flex: 0 0 auto;
 }
 
 .room-header > * {
@@ -940,6 +954,7 @@ main {
   gap: 6px;
   align-items: center;
   margin-top: 6px;
+  max-width: 100%;
 }
 
 .room-info-tag {
@@ -955,6 +970,7 @@ main {
   font-size: 12px;
   font-weight: 800;
   line-height: 1.2;
+  overflow-wrap: anywhere;
   box-shadow: 0 6px 14px rgba(105, 135, 170, 0.1);
 }
 
@@ -977,6 +993,7 @@ main {
   grid-area: side;
   display: grid;
   gap: 14px;
+  align-content: start;
 }
 
 .room-player-panel {
@@ -1033,8 +1050,8 @@ main {
 .room-player-panel .sticky-panel-title,
 .round-history .sticky-panel-title {
   position: static;
-  margin: -4px -4px 8px;
-  padding: 0 0 10px;
+  margin: -2px -2px 8px;
+  padding: 0 0 9px;
   background: transparent;
 }
 
@@ -1042,6 +1059,7 @@ main {
   grid-area: actions;
   display: grid;
   gap: 10px;
+  align-content: start;
 }
 
 .battle-panel {
@@ -1203,7 +1221,7 @@ main {
 
 .move-panel {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
 }
@@ -1211,6 +1229,22 @@ main {
 .move-panel h3,
 .move-panel p {
   margin: 0;
+}
+
+.move-panel h3,
+.chat-panel > h3,
+.sticky-panel-title {
+  color: var(--page-text);
+  font-size: 15px;
+  line-height: 1.25;
+}
+
+.chat-panel > h3,
+.sticky-panel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .emoji-row {
@@ -3075,6 +3109,7 @@ main {
     flex-direction: row;
     align-items: center;
     justify-content: space-between;
+    gap: 8px;
     min-height: 108px;
   }
 
@@ -3089,6 +3124,10 @@ main {
   .room-header h2 {
     font-size: 16px;
     margin-bottom: 2px;
+  }
+
+  .room-header .soft-button {
+    padding-inline: 10px;
   }
 
   .room-header p {
@@ -3107,6 +3146,18 @@ main {
   .actions-panel {
     position: static;
     z-index: auto;
+  }
+
+  .move-panel {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .move-panel h3,
+  .chat-panel > h3,
+  .sticky-panel-title {
+    font-size: 14px;
   }
 
   .battle-panel {
@@ -3167,6 +3218,7 @@ main {
 
   .room-side-stack {
     grid-template-columns: 1fr;
+    gap: 12px;
   }
 
   .chat-panel {
