@@ -985,6 +985,22 @@ main {
   scrollbar-gutter: stable;
 }
 
+.chat-panel {
+  display: grid;
+  grid-template-rows: auto minmax(220px, 1fr) auto;
+  gap: 10px;
+  min-height: 420px;
+}
+
+.chat-panel h3 {
+  margin-bottom: 0;
+}
+
+.chat-panel .send-row {
+  align-self: end;
+  padding-top: 2px;
+}
+
 .sticky-panel-title {
   position: sticky;
   top: -16px;
@@ -1440,8 +1456,10 @@ main {
 }
 
 .room-chat-messages {
-  min-height: 300px;
-  max-height: 380px;
+  min-height: 0;
+  height: clamp(260px, 34vh, 380px);
+  max-height: none;
+  align-self: stretch;
 }
 
 .chat-bubble-row {
@@ -3041,9 +3059,13 @@ main {
     max-height: 300px;
   }
 
+  .chat-panel {
+    min-height: 390px;
+    grid-template-rows: auto minmax(240px, 1fr) auto;
+  }
+
   .room-chat-messages {
-    min-height: 260px;
-    max-height: 340px;
+    height: clamp(240px, 42vh, 340px);
   }
 
   .round-history {
