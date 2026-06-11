@@ -1032,8 +1032,21 @@ main {
 .battle-panel {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 150px minmax(0, 1fr);
+  grid-template-areas: "seat-a versus seat-b";
   gap: 10px;
   align-items: stretch;
+}
+
+.seat-a {
+  grid-area: seat-a;
+}
+
+.seat-b {
+  grid-area: seat-b;
+}
+
+.versus {
+  grid-area: versus;
 }
 
 .seat-card,
@@ -1049,17 +1062,58 @@ main {
   text-align: center;
   gap: 8px;
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--panel-solid) 65%, white);
+  min-width: 0;
+}
+
+.seat-card {
+  justify-items: stretch;
+  text-align: left;
+}
+
+.seat-identity {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.seat-label {
+  width: fit-content;
+  border: 1px solid color-mix(in srgb, var(--primary) 38%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 10%, var(--panel-soft));
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  padding: 3px 8px;
 }
 
 .seat-card strong {
   color: var(--page-text);
-  word-break: break-word;
   font-size: 14px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.seat-card .player-badge {
+  max-width: 100%;
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+.seat-card .player-badge strong {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.seat-card > button {
+  justify-self: start;
 }
 
 .versus strong {
   font-size: 30px;
   line-height: 1;
+  white-space: nowrap;
 }
 
 .versus-label {
@@ -1077,21 +1131,30 @@ main {
   display: grid;
   gap: 4px;
   justify-items: center;
+  min-width: 0;
+  width: 100%;
   animation: settle-pop 420ms ease both;
 }
 
 .settlement-pop span {
   color: var(--muted);
   font-size: 12px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: center;
 }
 
 .settlement-pop strong {
   border: 1px solid var(--pink-border);
-  border-radius: 999px;
+  border-radius: 8px;
   padding: 4px 10px;
   background: var(--notice-bg);
   color: var(--page-text);
   font-size: 14px;
+  max-width: 100%;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  text-align: center;
 }
 
 @keyframes settle-pop {
@@ -1167,6 +1230,9 @@ main {
   background: var(--panel-soft);
   margin: 0;
   font-weight: 700;
+  width: fit-content;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .seat-stats {
@@ -3021,19 +3087,27 @@ main {
 
   .battle-panel {
     order: 2;
-    grid-template-columns: minmax(0, 1fr) 76px minmax(0, 1fr);
-    gap: 6px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      "seat-a seat-b"
+      "versus versus";
+    gap: 8px;
   }
 
   .seat-card,
   .versus {
-    min-height: 112px;
-    padding: 8px;
-    gap: 5px;
+    min-height: 104px;
+    padding: 10px;
+    gap: 6px;
   }
 
-  .seat-card h3 {
-    font-size: 14px;
+  .versus {
+    min-height: 86px;
+    grid-template-columns: auto auto minmax(0, 1fr);
+    align-items: center;
+    justify-items: start;
+    text-align: left;
+    column-gap: 10px;
   }
 
   .seat-card strong {
@@ -3041,14 +3115,30 @@ main {
   }
 
   .versus strong {
-    font-size: 21px;
+    font-size: 24px;
   }
 
-  .versus span,
+  .versus-label {
+    font-size: 12px;
+  }
+
   .versus p,
   .choice-badge,
   .seat-stats {
     font-size: 12px;
+  }
+
+  .settlement-pop {
+    justify-items: start;
+  }
+
+  .settlement-pop span,
+  .settlement-pop strong {
+    text-align: left;
+  }
+
+  .settlement-pop span {
+    display: none;
   }
 
   .room-side-stack {
@@ -3123,5 +3213,20 @@ main {
   .emoji-row button {
     flex: 1;
     min-width: 0;
+  }
+}
+
+@media (max-width: 380px) {
+  .battle-panel {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "seat-a"
+      "versus"
+      "seat-b";
+  }
+
+  .seat-card,
+  .versus {
+    min-height: auto;
   }
 }

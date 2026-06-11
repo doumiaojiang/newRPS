@@ -1333,8 +1333,11 @@ function SeatView({ seat, room, me, now, onSit }: { seat: SeatKey; room: RoomSna
   const choice = room.revealedChoices?.[seat] || (occupant?.id === me.id ? room.choices[seat] : room.choices[seat] ? "hidden" : undefined);
   const stats = room.seatStats[seat];
   return (
-    <div className="seat-card">
-      {occupant ? <strong>{"isBot" in occupant ? `🤖 ${occupant.name}` : <PlayerBadge player={occupant} compact />}</strong> : <button onClick={onSit}>🪑 坐下</button>}
+    <div className={`seat-card seat-${seat.toLowerCase()}`}>
+      <div className="seat-identity">
+        <span className="seat-label">玩家 {seat}</span>
+        {occupant ? <strong>{"isBot" in occupant ? `🤖 ${occupant.name}` : <PlayerBadge player={occupant} compact />}</strong> : <button onClick={onSit}>🪑 坐下</button>}
+      </div>
       {occupant && !("isBot" in occupant) && <OfflineBadge player={occupant} now={now} />}
       <p className="choice-badge">{choice ? choiceText(choice) : room.seats.A && room.seats.B ? "🤔 等待出拳" : "⏳ 等人"}</p>
       {occupant && !("isBot" in occupant) && <SeatStatsView stats={stats} />}
