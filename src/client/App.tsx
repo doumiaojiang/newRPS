@@ -108,6 +108,7 @@ function appendHistoryPage(oldItems: RoomSnapshot["roundHistory"], newItems: Roo
 }
 
 export function App() {
+  const [config, setConfig] = useState<AppConfig | null>(null);
   const [lobby, setLobby] = useState<LobbySnapshot | null>(null);
   const [room, setRoom] = useState<RoomSnapshot | null>(null);
   const [me, setMe] = useState<MeState | null>(null);
@@ -119,10 +120,14 @@ export function App() {
   const [theme, setTheme] = useState<"light" | "dark">(() => (localStorage.getItem("rps-online-theme") === "dark" ? "dark" : "light"));
 
   useEffect(() => {
-    socket.on("lobby:update", setLobby);
+    socket.on("lobby:update", (nextLobby: LobbySnapshot) => {
+      if (nextLobby.config) setConfig(nextLobby.config);
+      setLobby(nextLobby);
+    });
     socket.on("room:update", (nextRoom: RoomSnapshot) => {
       setRoom((old) => {
         if (old?.id === nextRoom.id && nextRoom.updatedAt < old.updatedAt) return old;
+        if (old?.id === nextRoom.id && nextRoom.chat.length === 0) return { ...nextRoom, chat: old.chat };
         return nextRoom;
       });
       if (!isAdminRoute()) setView("room");
@@ -141,7 +146,7 @@ export function App() {
       setNotice(message || "房间已被管理员关闭。");
     });
     socket.on("config:update", (config: AppConfig) => {
-      setLobby((old) => (old ? { ...old, config } : old));
+      setConfig(config);
     });
     socket.on("chat:append", (message: ChatMessage) => {
       setRoom((old) => {
@@ -243,8 +248,6 @@ export function App() {
     }
   }, [lobby, me]);
 
-  const config = lobby?.config;
-
   if (!config) return <div className="loading">正在连接服务器...</div>;
 
   return (
@@ -283,9 +286,9 @@ export function App() {
         setView(isAdminRoute() ? "admin" : next.room ? "room" : "lobby");
         if (next.room?.phase === "punishment") setNotice("已恢复到未完成的惩罚房间。");
       }} onError={setNotice} />}
-      {view === "lobby" && me && lobby && <Lobby lobby={lobby} me={me.player} onError={setNotice} onGoRoom={() => setView("room")} />}
+      {view === "lobby" && me && lobby && <Lobby config={config} lobby={lobby} me={me.player} onError={setNotice} onGoRoom={() => setView("room")} />}
       {view === "room" && me && room && <Room config={config} room={room} me={me.player} onBack={() => setView("lobby")} onError={setNotice} />}
-      {view === "admin" && lobby && <AdminPanel lobby={lobby} onBack={() => { if (window.location.hash === "#admin") window.location.hash = ""; setView(me ? "lobby" : "login"); }} onError={setNotice} />}
+      {view === "admin" && lobby && <AdminPanel config={config} lobby={lobby} onBack={() => { if (window.location.hash === "#admin") window.location.hash = ""; setView(me ? "lobby" : "login"); }} onError={setNotice} />}
       {view === "room" && !room && <section className="panel">你暂时不在房间里。</section>}
       {profileOpen && me && <ProfilePanel config={config} me={me.player} onClose={() => setProfileOpen(false)} onUpdated={(player) => { setMe({ ...me, player }); localStorage.setItem("rps-online-name", player.name); localStorage.setItem("rps-online-gender", player.genderId); }} onError={setNotice} />}
     </main>
@@ -394,7 +397,7 @@ function titleClass(points: number) {
   return "title-high";
 }
 
-function Lobby({ lobby, me, onError, onGoRoom }: { lobby: LobbySnapshot; me: PublicPlayer; onError: (message: string) => void; onGoRoom: () => void }) {
+function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lobby: LobbySnapshot; me: PublicPlayer; onError: (message: string) => void; onGoRoom: () => void }) {
   const [showCreate, setShowCreate] = useState(false);
   const [passwords, setPasswords] = useState<Record<string, string>>({});
   const [suggestion, setSuggestion] = useState("");
@@ -448,7 +451,7 @@ function Lobby({ lobby, me, onError, onGoRoom }: { lobby: LobbySnapshot; me: Pub
                 {room.tags?.length ? <RoomTagList tags={room.tags} /> : null}
                 <RoomVersusLine room={room} />
                 <p>{room.status} · {room.players}/2 战斗席 · {room.spectators} 观战</p>
-                <RoomInfoTagList tags={lobbyRoomInfoTags(lobby.config, room)} />
+                <RoomInfoTagList tags={lobbyRoomInfoTags(config, room)} />
               </div>
               <div className="join-box">
                 {room.hasPassword && <input placeholder="房间密码" value={passwords[room.id] || ""} onChange={(event) => setPasswords({ ...passwords, [room.id]: event.target.value })} />}
@@ -460,7 +463,7 @@ function Lobby({ lobby, me, onError, onGoRoom }: { lobby: LobbySnapshot; me: Pub
         </div>
       </div>
       <aside className="side-column">
-        <NameWarLoserPanel title={lobby.config.nameWar.loserPanelTitle} losers={nameWarLosers} me={me} onError={onError} />
+        <NameWarLoserPanel title={config.nameWar.loserPanelTitle} losers={nameWarLosers} me={me} onError={onError} />
         <Leaderboard title="在线积分榜" players={lobby.rankedLeaderboard} />
         <div className="panel lobby-message-board">
           <h2><MessageCircle size={18} /> 留言板</h2>
@@ -474,7 +477,7 @@ function Lobby({ lobby, me, onError, onGoRoom }: { lobby: LobbySnapshot; me: Pub
           </div>
         </div>
       </aside>
-      {showCreate && <CreateRoom config={lobby.config} onCreated={onGoRoom} onCancel={() => setShowCreate(false)} onError={onError} />}
+      {showCreate && <CreateRoom config={config} onCreated={onGoRoom} onCancel={() => setShowCreate(false)} onError={onError} />}
     </section>
   );
 }
@@ -1682,34 +1685,34 @@ function defaultRoomInfoTagStyle(label: string): RoomInfoTagStyle {
   return { label, textColor: "#4d5c6f", backgroundColor: "#eef3f8", borderColor: "#c9d6e4" };
 }
 
-function AdminPanel({ lobby, onBack, onError }: { lobby: LobbySnapshot; onBack: () => void; onError: (message: string) => void }) {
+function AdminPanel({ config, lobby, onBack, onError }: { config: AppConfig; lobby: LobbySnapshot; onBack: () => void; onError: (message: string) => void }) {
   const [password, setPassword] = useState("");
   const [logged, setLogged] = useState(false);
-  const [draft, setDraft] = useState<AppConfig>(lobby.config);
+  const [draft, setDraft] = useState<AppConfig>(config);
   const [activeSection, setActiveSection] = useState<AdminSection>("site");
-  const [activeFactionId, setActiveFactionId] = useState(lobby.config.genderFactions[0]?.id || "");
+  const [activeFactionId, setActiveFactionId] = useState(config.genderFactions[0]?.id || "");
   const [factionSearch, setFactionSearch] = useState("");
-  const [activeTitleId, setActiveTitleId] = useState(lobby.config.titles[0]?.id || "");
+  const [activeTitleId, setActiveTitleId] = useState(config.titles[0]?.id || "");
   const [titleSearch, setTitleSearch] = useState("");
-  const [activePunishmentId, setActivePunishmentId] = useState(lobby.config.punishments[0]?.id || "");
+  const [activePunishmentId, setActivePunishmentId] = useState(config.punishments[0]?.id || "");
   const [punishmentSearch, setPunishmentSearch] = useState("");
   const [announcementMessage, setAnnouncementMessage] = useState("");
   const [announcementSeconds, setAnnouncementSeconds] = useState("8");
-  const [configText, setConfigText] = useState(JSON.stringify(lobby.config, null, 2));
+  const [configText, setConfigText] = useState(JSON.stringify(config, null, 2));
   const [dirty, setDirty] = useState(false);
   const [serverConfigChanged, setServerConfigChanged] = useState(false);
-  const lastServerConfigText = useRef(JSON.stringify(lobby.config));
+  const lastServerConfigText = useRef(JSON.stringify(config));
 
   useEffect(() => {
-    const nextText = JSON.stringify(lobby.config);
+    const nextText = JSON.stringify(config);
     if (nextText === lastServerConfigText.current) return;
     lastServerConfigText.current = nextText;
     if (dirty) {
       setServerConfigChanged(true);
       return;
     }
-    applyServerConfig(lobby.config);
-  }, [lobby.config, dirty]);
+    applyServerConfig(config);
+  }, [config, dirty]);
 
   function applyServerConfig(nextConfig: AppConfig) {
     lastServerConfigText.current = JSON.stringify(nextConfig);
@@ -2308,8 +2311,10 @@ function AdminPanel({ lobby, onBack, onError }: { lobby: LobbySnapshot; onBack: 
             <span>运行状态</span>
             <p>在线 {lobby.onlineCount} 人 · 房间 {lobby.rooms.length} 个 · 运行 {formatDuration(Date.now() - stats.startedAt)}</p>
             <p>房间广播 {stats.roomBroadcasts} 次 · 大厅广播 {stats.lobbyBroadcasts} 次</p>
+            <p>最近 1 分钟：房间 {stats.recentRoomBroadcasts} 次 · 大厅 {stats.recentLobbyBroadcasts} 次</p>
             <p>断线 {stats.disconnects} 次 · 重连 {stats.reconnects} 次</p>
             <p>最近房间快照 {formatBytes(stats.lastRoomSnapshotBytes)} · 最近大厅快照 {formatBytes(stats.lastLobbySnapshotBytes)}</p>
+            <p>平均快照：房间 {formatBytes(stats.averageRoomSnapshotBytes)} · 大厅 {formatBytes(stats.averageLobbySnapshotBytes)}</p>
           </div>
           <div className="admin-action-row">
             <button className="danger-button" onClick={() => action("clearSuggestions")}>清空留言板</button>

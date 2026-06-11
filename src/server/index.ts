@@ -67,7 +67,10 @@ const lobbyChat: ChatMessage[] = [];
 const adminSocketIds = new Set<string>();
 const maxRoomChatMessages = 200;
 const maxLobbyMessages = 100;
-const roomHistoryPageSize = 50;
+const roomHistoryPageSize = 20;
+const broadcastMetricWindowMs = 60_000;
+const recentBroadcasts: Array<{ type: "room" | "lobby"; bytes: number; at: number }> = [];
+let lobbyBroadcastTimer: NodeJS.Timeout | undefined;
 const serverStats = {
   startedAt: Date.now(),
   roomBroadcasts: 0,
@@ -75,7 +78,11 @@ const serverStats = {
   disconnects: 0,
   reconnects: 0,
   lastRoomSnapshotBytes: 0,
-  lastLobbySnapshotBytes: 0
+  lastLobbySnapshotBytes: 0,
+  recentRoomBroadcasts: 0,
+  recentLobbyBroadcasts: 0,
+  averageRoomSnapshotBytes: 0,
+  averageLobbySnapshotBytes: 0
 };
 
 const app = express();
@@ -371,7 +378,7 @@ function refreshAllPlayersForConfig() {
   }
 }
 
-function roomSnapshot(room: RoomState): RoomSnapshot {
+function roomSnapshot(room: RoomState, options: { includeChat?: boolean } = {}): RoomSnapshot {
   for (const id of [room.seats.A?.id, room.seats.B?.id, ...room.spectatorIds]) {
     const player = id ? players.get(id) : undefined;
     if (player && refreshNameWarState(player)) refreshPlayerSnapshots(player);
@@ -393,7 +400,8 @@ function roomSnapshot(room: RoomState): RoomSnapshot {
     roundHistory: room.roundHistory.slice(0, roomHistoryPageSize),
     roundHistoryTotal: room.roundHistory.length,
     spectators,
-    choices: hideOpponentChoices(room)
+    choices: hideOpponentChoices(room),
+    chat: options.includeChat === false ? [] : room.chat
   };
 }
 
@@ -466,7 +474,7 @@ function hideOpponentChoices(room: RoomState) {
   return room.phase === "result" || room.phase === "punishment" ? room.revealedChoices ?? {} : hidden;
 }
 
-function lobbySnapshot() {
+function lobbySnapshot(options: { includeConfig?: boolean } = {}) {
   for (const player of players.values()) {
     if (refreshNameWarState(player)) refreshPlayerSnapshots(player);
   }
@@ -479,7 +487,7 @@ function lobbySnapshot() {
     .filter((player) => player.connected)
     .sort((a, b) => b.stats.rankedPoints - a.stats.rankedPoints || b.stats.wins - a.stats.wins);
   return {
-    config,
+    ...(options.includeConfig ? { config } : {}),
     onlineCount: [...players.values()].filter((player) => player.connected).length,
     players: humanPlayers,
     rooms: [...rooms.values()].map((room) => ({
@@ -518,11 +526,30 @@ function winRate(player: PublicPlayer) {
   return decisive === 0 ? 0 : player.stats.wins / decisive;
 }
 
-function broadcastLobby() {
+function recordBroadcast(type: "room" | "lobby", bytes: number) {
+  const now = Date.now();
+  recentBroadcasts.push({ type, bytes, at: now });
+  while (recentBroadcasts.length && now - recentBroadcasts[0].at > broadcastMetricWindowMs) recentBroadcasts.shift();
+  const roomItems = recentBroadcasts.filter((item) => item.type === "room");
+  const lobbyItems = recentBroadcasts.filter((item) => item.type === "lobby");
+  serverStats.recentRoomBroadcasts = roomItems.length;
+  serverStats.recentLobbyBroadcasts = lobbyItems.length;
+  serverStats.averageRoomSnapshotBytes = roomItems.length ? Math.round(roomItems.reduce((sum, item) => sum + item.bytes, 0) / roomItems.length) : 0;
+  serverStats.averageLobbySnapshotBytes = lobbyItems.length ? Math.round(lobbyItems.reduce((sum, item) => sum + item.bytes, 0) / lobbyItems.length) : 0;
+}
+
+function emitLobbyUpdate() {
+  lobbyBroadcastTimer = undefined;
   const snapshot = lobbySnapshot();
   serverStats.lobbyBroadcasts += 1;
   serverStats.lastLobbySnapshotBytes = Buffer.byteLength(JSON.stringify(snapshot));
+  recordBroadcast("lobby", serverStats.lastLobbySnapshotBytes);
   io.emit("lobby:update", snapshot);
+}
+
+function broadcastLobby() {
+  if (lobbyBroadcastTimer) return;
+  lobbyBroadcastTimer = setTimeout(emitLobbyUpdate, 150);
 }
 
 function broadcastRoom(roomId: string, updateLobby = false) {
@@ -531,9 +558,10 @@ function broadcastRoom(roomId: string, updateLobby = false) {
   // 每次广播房间状态都打一个时间戳，前端可以用它丢掉过期快照。
   // 这样聊天、审核、提交证明同时发生时，不容易被旧状态覆盖。
   room.updatedAt = Date.now();
-  const snapshot = roomSnapshot(room);
+  const snapshot = roomSnapshot(room, { includeChat: false });
   serverStats.roomBroadcasts += 1;
   serverStats.lastRoomSnapshotBytes = Buffer.byteLength(JSON.stringify(snapshot));
+  recordBroadcast("room", serverStats.lastRoomSnapshotBytes);
   io.to(roomId).emit("room:update", snapshot);
   if (updateLobby) broadcastLobby();
 }
@@ -1249,7 +1277,8 @@ function leaveRoom(player: PlayerState, reason: LeaveReason = "manual"): LeaveRe
 }
 
 io.on("connection", (socket) => {
-  socket.emit("lobby:update", lobbySnapshot());
+  socket.emit("config:update", config);
+  socket.emit("lobby:update", lobbySnapshot({ includeConfig: true }));
 
   socket.on("player:join", ({ name, genderId, token }: { name: string; genderId: string; token?: string }, reply) => {
     const cleanName = String(name || "").trim().slice(0, 12);
@@ -1295,7 +1324,7 @@ io.on("connection", (socket) => {
     socket.join(player.id);
     if (player.roomId) socket.join(player.roomId);
     const currentRoom = player.roomId ? rooms.get(player.roomId) : undefined;
-    reply?.({ player: publicPlayer(player), token: player.token, roomId: player.roomId, room: currentRoom ? roomSnapshot(currentRoom) : undefined });
+    reply?.({ player: publicPlayer(player), token: player.token, roomId: player.roomId, room: currentRoom ? roomSnapshot(currentRoom, { includeChat: true }) : undefined });
     broadcastLobby();
     if (player.roomId) {
       if (currentRoom?.phase === "punishment" && hadDisconnectHold) {
@@ -1475,7 +1504,7 @@ io.on("connection", (socket) => {
     player.roomId = roomId;
     socket.join(roomId);
     roomNotice(room, `${playerShortName(player)} 进入房间，坐在战斗席 A。`);
-    reply?.({ room: roomSnapshot(room) });
+    reply?.({ room: roomSnapshot(room, { includeChat: true }) });
     broadcastRoom(roomId, true);
   });
 
@@ -1500,7 +1529,7 @@ io.on("connection", (socket) => {
     socket.join(room.id);
     roomNotice(room, `${playerShortName(player)} 进入房间，位置：${joinRole}。`);
     maybeStartChoosing(room);
-    reply?.({ room: roomSnapshot(room) });
+    reply?.({ room: roomSnapshot(room, { includeChat: true }) });
     broadcastRoom(room.id, true);
   });
 

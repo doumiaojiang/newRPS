@@ -217,10 +217,14 @@ export type ServerStats = {
   reconnects: number;
   lastRoomSnapshotBytes: number;
   lastLobbySnapshotBytes: number;
+  recentRoomBroadcasts: number;
+  recentLobbyBroadcasts: number;
+  averageRoomSnapshotBytes: number;
+  averageLobbySnapshotBytes: number;
 };
 
 export type LobbySnapshot = {
-  config: AppConfig;
+  config?: AppConfig;
   onlineCount: number;
   players: PublicPlayer[];
   rooms: Array<{
