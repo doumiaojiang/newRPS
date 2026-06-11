@@ -26,6 +26,7 @@ type PlayerState = PublicPlayer & {
   socketId?: string;
   token: string;
   ipAddress?: string;
+  disconnectGraceTimer?: NodeJS.Timeout;
   disconnectTimer?: NodeJS.Timeout;
   recentMoves: Move[];
 };
@@ -347,7 +348,7 @@ function applyGender(player: PlayerState, genderId: string) {
 }
 
 function publicPlayer(player: PlayerState): PublicPlayer {
-  const { socketId: _socketId, token: _token, ipAddress: _ipAddress, disconnectTimer: _timer, recentMoves: _moves, ...rest } = player;
+  const { socketId: _socketId, token: _token, ipAddress: _ipAddress, disconnectGraceTimer: _graceTimer, disconnectTimer: _timer, recentMoves: _moves, ...rest } = player;
   return rest;
 }
 
@@ -420,7 +421,9 @@ function roomHasPlayer(room: RoomState, playerId: string) {
 }
 
 function clearDisconnectHold(player: PlayerState) {
+  if (player.disconnectGraceTimer) clearTimeout(player.disconnectGraceTimer);
   if (player.disconnectTimer) clearTimeout(player.disconnectTimer);
+  player.disconnectGraceTimer = undefined;
   player.disconnectTimer = undefined;
   player.disconnectExpiresAt = undefined;
 }
@@ -1835,41 +1838,50 @@ io.on("connection", (socket) => {
     const player = getPlayer(socket.id);
     if (!player) return;
     serverStats.disconnects += 1;
-    if (player.disconnectTimer) clearTimeout(player.disconnectTimer);
-    player.connected = false;
+    clearDisconnectHold(player);
     player.socketId = undefined;
-    player.disconnectExpiresAt = Date.now() + 60_000;
-    refreshPlayerSnapshots(player);
-    if (player.roomId) {
-      const room = rooms.get(player.roomId);
-      if (room) {
-        roomNotice(room, `${playerShortName(player)} 断线了，保留座位 60 秒。`);
-        broadcastRoom(room.id);
-      }
-    }
-    player.disconnectTimer = setTimeout(() => {
+
+    // 短暂刷新页面、手机网络抖动都很常见。前 30 秒先不广播离线，
+    // 避免房间聊天一直刷“断线了”；超过 30 秒才进入可见的 60 秒保留倒计时。
+    player.disconnectGraceTimer = setTimeout(() => {
       const current = players.get(player.id);
-      if (!current || current.connected) return;
+      if (!current || current.socketId || current.disconnectGraceTimer !== player.disconnectGraceTimer) return;
+      current.disconnectGraceTimer = undefined;
+      current.connected = false;
+      current.disconnectExpiresAt = Date.now() + 60_000;
+      refreshPlayerSnapshots(current);
       if (current.roomId) {
         const room = rooms.get(current.roomId);
-        const seat = room ? seatOf(room, current.id) : null;
-        if (room?.settings.enableRanked && room.phase === "choosing" && seat) {
-          const otherSeat = seat === "A" ? "B" : "A";
-          const other = room.seats[otherSeat];
-          if (other && !("isBot" in other)) players.get(other.id)!.stats.wins += 1;
-          current.stats.losses += 1;
-          updateRankedPoints(current, -room.settings.stake);
-          if (other && !("isBot" in other)) updateRankedPoints(players.get(other.id)!, room.settings.stake);
+        if (room) {
+          roomNotice(room, `${playerShortName(current)} 断线了，保留座位 60 秒。`);
+          broadcastRoom(room.id);
         }
-        leaveRoom(current, "disconnectTimeout");
       }
-      // 超过 60 秒后只清掉房间/座位保护，不删除玩家档案。
-      // 否则玩家稍后用同一个浏览器回来时会被当成新玩家，积分和战绩看起来像“莫名清零”。
-      current.disconnectExpiresAt = undefined;
-      current.disconnectTimer = undefined;
       broadcastLobby();
-    }, 60_000);
-    broadcastLobby();
+
+      current.disconnectTimer = setTimeout(() => {
+        const expired = players.get(current.id);
+        if (!expired || expired.connected) return;
+        if (expired.roomId) {
+          const room = rooms.get(expired.roomId);
+          const seat = room ? seatOf(room, expired.id) : null;
+          if (room?.settings.enableRanked && room.phase === "choosing" && seat) {
+            const otherSeat = seat === "A" ? "B" : "A";
+            const other = room.seats[otherSeat];
+            if (other && !("isBot" in other)) players.get(other.id)!.stats.wins += 1;
+            expired.stats.losses += 1;
+            updateRankedPoints(expired, -room.settings.stake);
+            if (other && !("isBot" in other)) updateRankedPoints(players.get(other.id)!, room.settings.stake);
+          }
+          leaveRoom(expired, "disconnectTimeout");
+        }
+        // 超过可见倒计时后只清掉房间/座位保护，不删除玩家档案。
+        // 否则玩家稍后用同一个浏览器回来时会被当成新玩家，积分和战绩看起来像“莫名清零”。
+        expired.disconnectExpiresAt = undefined;
+        expired.disconnectTimer = undefined;
+        broadcastLobby();
+      }, 60_000);
+    }, 30_000);
   });
 });
 
