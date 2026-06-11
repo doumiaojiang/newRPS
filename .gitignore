@@ -1,0 +1,11 @@
+node_modules/
+dist/
+dist-server/
+work/
+outputs/
+
+.DS_Store
+*.log
+
+config/active.json
+config/1

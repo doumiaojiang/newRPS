@@ -1,0 +1,110 @@
+{
+  "site": {
+    "name": "抖喵游戏屋",
+    "description": "粉蓝白风格的实时联机小游戏大厅，先从锤子剪刀布开始。",
+    "adminPassword": "change-me-admin"
+  },
+  "genders": [
+    { "id": "boy", "label": "男生", "factionId": "male_faction" },
+    { "id": "male", "label": "男性", "factionId": "male_faction" },
+    { "id": "girl", "label": "女生", "factionId": "female_faction" },
+    { "id": "female", "label": "女性", "factionId": "female_faction" },
+    { "id": "femboy", "label": "男娘", "factionId": "femboy_faction" },
+    { "id": "transgirl", "label": "药娘", "factionId": "femboy_faction" },
+    { "id": "attack_helicopter", "label": "武装直升机", "factionId": "other_faction" },
+    { "id": "walmart_bag", "label": "沃尔玛购物袋", "factionId": "other_faction" }
+  ],
+  "genderFactions": [
+    {
+      "id": "male_faction",
+      "label": "男性阵营",
+      "textColor": "#225c8d",
+      "backgroundColor": "#dff2ff",
+      "borderColor": "#92cdf2",
+      "genders": [
+        { "id": "boy", "label": "男生", "factionId": "male_faction" },
+        { "id": "male", "label": "男性", "factionId": "male_faction" }
+      ]
+    },
+    {
+      "id": "female_faction",
+      "label": "女性阵营",
+      "textColor": "#8a3158",
+      "backgroundColor": "#ffe2ef",
+      "borderColor": "#f3a9ca",
+      "genders": [
+        { "id": "girl", "label": "女生", "factionId": "female_faction" },
+        { "id": "female", "label": "女性", "factionId": "female_faction" }
+      ]
+    },
+    {
+      "id": "femboy_faction",
+      "label": "男娘阵营",
+      "textColor": "#6650a4",
+      "backgroundColor": "#eee9ff",
+      "borderColor": "#c7b5ff",
+      "genders": [
+        { "id": "femboy", "label": "男娘", "factionId": "femboy_faction" },
+        { "id": "transgirl", "label": "药娘", "factionId": "femboy_faction" }
+      ]
+    },
+    {
+      "id": "other_faction",
+      "label": "其他阵营",
+      "textColor": "#4d5c6f",
+      "backgroundColor": "#eef3f8",
+      "borderColor": "#c9d6e4",
+      "genders": [
+        { "id": "attack_helicopter", "label": "武装直升机", "factionId": "other_faction" },
+        { "id": "walmart_bag", "label": "沃尔玛购物袋", "factionId": "other_faction" }
+      ]
+    }
+  ],
+  "titles": [
+    { "id": "neg4", "min": -999, "max": -750, "names": ["反向传奇", "倒霉拳王", "逆风大师"] },
+    { "id": "neg3", "min": -749, "max": -500, "names": ["失误专家", "惜败旅人", "低谷挑战者"] },
+    { "id": "neg2", "min": -499, "max": -250, "names": ["再来一局", "慢热选手", "翻盘预备役"] },
+    { "id": "neg1", "min": -249, "max": -1, "names": ["新手保护期", "粉蓝练习生", "手感寻找中"] },
+    { "id": "pos0", "min": 0, "max": 0, "names": ["初心拳手", "轻松玩家", "蓝白新人"] },
+    { "id": "pos1", "min": 1, "max": 249, "names": ["小有手感", "粉蓝上分中", "稳步前进"] },
+    { "id": "pos2", "min": 250, "max": 499, "names": ["稳定发挥", "剪刀灵感家", "布阵高手"] },
+    { "id": "pos3", "min": 500, "max": 749, "names": ["读心高手", "节奏大师", "胜场收集者"] },
+    { "id": "pos4", "min": 750, "max": 999, "names": ["常胜拳王", "天选之手", "粉蓝传说"] }
+  ],
+  "punishments": [
+    { "id": "truth", "name": "真心话", "description": "输家回答胜者提出的一个真心话问题。", "variants": { "male_faction": "回答一个关于勇气或选择的真心话。", "female_faction": "回答一个关于心情或偏好的真心话。", "femboy_faction": "回答一个关于反差感或可爱瞬间的真心话。", "other_faction": "回答一个脑洞一点的真心话。" }, "roomNamePool": { "adjectives": ["坦白", "柔软", "秘密", "粉蓝"], "subjects": ["真心话", "心声", "秘密", "提问"], "roomWords": ["小屋", "茶会", "房间", "角落"] } },
+    { "id": "challenge", "name": "大冒险", "description": "输家完成一个双方认可的小挑战。", "variants": { "male_faction": "完成一个简单动作挑战并提交证明。", "female_faction": "完成一个轻松可爱的挑战并提交证明。", "femboy_faction": "完成一个带一点反差感的小挑战并提交证明。", "other_faction": "完成一个脑洞挑战并提交证明。" }, "roomNamePool": { "adjectives": ["勇敢", "闪亮", "刺激", "奇妙"], "subjects": ["冒险", "挑战", "任务", "闯关"], "roomWords": ["擂台", "房间", "剧场", "基地"] } },
+    { "id": "sing", "name": "唱一句歌", "description": "输家唱一句歌并提交证明。", "variants": { "male_faction": "唱一句有气势的歌并提交证明。", "female_faction": "唱一句甜一点的歌并提交证明。", "femboy_faction": "唱一句反差感歌曲并提交证明。", "other_faction": "用奇怪但合法的方式唱一句歌并提交证明。" }, "roomNamePool": { "adjectives": ["旋律", "轻快", "甜甜", "夜间"], "subjects": ["唱歌", "音符", "麦克风", "歌声"], "roomWords": ["舞台", "小屋", "练习室", "房间"] } },
+    { "id": "water", "name": "喝水提醒", "description": "输家喝一杯水，健康一点也不错。", "variants": { "male_faction": "喝一杯水并说一句今日宣言。", "female_faction": "喝一杯水并说一句今日心情。", "femboy_faction": "喝一杯水并摆一个可爱表情。", "other_faction": "喝一杯水并用阵营风格发言。" }, "roomNamePool": { "adjectives": ["清爽", "健康", "透明", "温柔"], "subjects": ["喝水", "水杯", "补水", "咕嘟"], "roomWords": ["小站", "房间", "茶水间", "角落"] } }
+  ],
+  "playerPunishmentRoomNamePool": {
+    "adjectives": ["临时", "即兴", "互写", "神秘"],
+    "subjects": ["任务", "惩罚", "挑战", "考验"],
+    "roomWords": ["小屋", "房间", "剧场", "擂台"]
+  },
+  "roomTags": ["轻松", "认真", "排位", "惩罚", "聊天"],
+  "nameWar": {
+    "penaltyPrefix": "失名者",
+    "loserPanelTitle": "名字争夺战失格者",
+    "escapeTitle": "逃跑的人"
+  },
+  "bots": {
+    "names": ["Bot 小蓝", "Bot 小粉", "随机拳机", "布布机器人"],
+    "difficulties": [
+      { "id": "easy", "name": "简单", "description": "完全随机出拳。", "emoji": "🌱", "level": 1, "strategy": "random", "cardColor": "#9ed7ff" },
+      { "id": "normal", "name": "普通", "description": "观察玩家最近选择，稍微尝试反制。", "emoji": "🎯", "level": 3, "strategy": "counter", "cardColor": "#b8a7ff" },
+      { "id": "chaos", "name": "混乱", "description": "大多随机，偶尔连续使用同一招。", "emoji": "🌀", "level": 2, "strategy": "chaos", "cardColor": "#ffaad1" }
+    ]
+  },
+  "games": [
+    { "id": "rps", "name": "锤子剪刀布", "description": "双方同时选择石头、剪刀、布，服务器公开结算。" }
+  ],
+  "messages": {
+    "passwordWrong": "密码错误",
+    "nameRequired": "请输入 2-12 个字符的名字",
+    "roomCreated": "房间创建成功",
+    "proofRequired": "请提交惩罚证明",
+    "configSaved": "配置保存成功",
+    "configInvalid": "配置格式不正确"
+  }
+}
