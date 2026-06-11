@@ -474,8 +474,7 @@ function lobbySnapshot() {
     .slice(0, 10);
   const rankedLeaderboard = humanPlayers
     .filter((player) => player.connected)
-    .sort((a, b) => b.stats.rankedPoints - a.stats.rankedPoints || b.stats.wins - a.stats.wins)
-    .slice(0, 10);
+    .sort((a, b) => b.stats.rankedPoints - a.stats.rankedPoints || b.stats.wins - a.stats.wins);
   return {
     config,
     onlineCount: [...players.values()].filter((player) => player.connected).length,
