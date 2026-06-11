@@ -1090,8 +1090,10 @@ function Room({ config, room, me, onBack, onError }: { config: AppConfig; room: 
               房间玩家名单
               <span>{roomPlayers.length} 人</span>
             </h3>
-            {roomPlayers.map((item) => <RoomPlayerRow key={`${item.role}-${item.player.id}`} player={item.player} role={item.role} now={now} />)}
-            {roomPlayers.length === 0 && <p className="empty">暂无真人玩家</p>}
+            <div className="room-player-list">
+              {roomPlayers.map((item) => <RoomPlayerRow key={`${item.role}-${item.player.id}`} player={item.player} role={item.role} now={now} />)}
+              {roomPlayers.length === 0 && <p className="empty">暂无真人玩家</p>}
+            </div>
           </div>
           <div className="panel chat-panel">
             <h3>房间聊天</h3>
@@ -1109,9 +1111,11 @@ function Room({ config, room, me, onBack, onError }: { config: AppConfig; room: 
             📜 对局记录
             <span>{visibleRoundHistory.length} / {room.roundHistoryTotal}</span>
           </h3>
-          {visibleRoundHistory.map((item) => <RoundHistoryCard key={item.id} item={item} onOpenImage={setPreviewImage} />)}
-          {visibleRoundHistory.length < room.roundHistoryTotal && <button className="soft-button" onClick={loadMoreHistory}>加载更多记录</button>}
-          {visibleRoundHistory.length === 0 && <p className="empty">还没有对局记录</p>}
+          <div className="round-history-list">
+            {visibleRoundHistory.map((item) => <RoundHistoryCard key={item.id} item={item} onOpenImage={setPreviewImage} />)}
+            {visibleRoundHistory.length < room.roundHistoryTotal && <button className="soft-button" onClick={loadMoreHistory}>加载更多记录</button>}
+            {visibleRoundHistory.length === 0 && <p className="empty">还没有对局记录</p>}
+          </div>
         </div>
       </div>
       {previewImage && (

@@ -980,8 +980,15 @@ main {
 }
 
 .room-player-panel {
-  max-height: 360px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.room-player-list {
+  height: 154px;
   overflow: auto;
+  padding-right: 3px;
   scrollbar-gutter: stable;
 }
 
@@ -1021,6 +1028,14 @@ main {
   font-weight: 900;
   padding: 4px 8px;
   white-space: nowrap;
+}
+
+.room-player-panel .sticky-panel-title,
+.round-history .sticky-panel-title {
+  position: static;
+  margin: -4px -4px 8px;
+  padding: 0 0 10px;
+  background: transparent;
 }
 
 .actions-panel {
@@ -1300,10 +1315,19 @@ main {
 .round-history {
   grid-area: history;
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 8px;
+  height: clamp(380px, 48vh, 560px);
+  overflow: hidden;
+}
+
+.round-history-list {
+  display: grid;
   align-content: start;
   gap: 8px;
-  max-height: 560px;
+  min-height: 0;
   overflow: auto;
+  padding-right: 3px;
   scrollbar-gutter: stable;
 }
 
@@ -3145,8 +3169,16 @@ main {
     grid-template-columns: 1fr;
   }
 
+  .chat-panel {
+    order: 1;
+  }
+
   .room-player-panel {
-    max-height: 300px;
+    order: 2;
+  }
+
+  .room-player-list {
+    height: 146px;
   }
 
   .chat-panel {
@@ -3159,7 +3191,7 @@ main {
   }
 
   .round-history {
-    max-height: 520px;
+    height: 460px;
   }
 
   .designed-task-card {
