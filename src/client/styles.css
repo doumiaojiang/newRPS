@@ -204,6 +204,12 @@ main {
   gap: 6px;
 }
 
+.top-leaderboard-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .icon-button {
   width: 34px;
   min-height: 34px;
@@ -1043,6 +1049,95 @@ main {
   overflow-y: auto;
   padding-right: 4px;
   overscroll-behavior: contain;
+}
+
+.leaderboard-modal {
+  width: min(760px, 100%);
+  max-height: min(820px, calc(100dvh - 28px));
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-solid);
+  box-shadow: 0 18px 60px var(--shadow);
+  padding: 14px;
+  overflow: hidden;
+}
+
+.leaderboard-tabs {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.global-leaderboard-list {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.global-leaderboard-list h3 {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: 0;
+  background: var(--panel-solid);
+  padding: 2px 0 8px;
+}
+
+.global-rank-card {
+  display: grid;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-soft) 78%, var(--panel-solid));
+  padding: 10px;
+}
+
+.global-rank-main,
+.global-rank-stats {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.rank-index {
+  min-width: 42px;
+  color: var(--muted);
+  font-weight: 900;
+}
+
+.global-rank-stats span,
+.online-dot {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-solid);
+  color: var(--muted);
+  padding: 3px 7px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.online-dot.online {
+  border-color: color-mix(in srgb, #5fbf8f 62%, var(--border));
+  color: #26724e;
+  background: color-mix(in srgb, #5fbf8f 14%, var(--panel-solid));
+}
+
+.online-dot.offline {
+  border-color: color-mix(in srgb, var(--pink-border) 62%, var(--border));
+  color: var(--muted);
+}
+
+.global-rank-extra {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .rank-row {
@@ -3345,7 +3440,15 @@ main {
     padding: 0;
   }
 
-  .top-profile-button span {
+  .top-leaderboard-button {
+    width: 34px;
+    min-width: 34px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .top-profile-button span,
+  .top-leaderboard-button span {
     display: none;
   }
 

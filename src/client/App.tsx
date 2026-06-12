@@ -126,6 +126,7 @@ export function App() {
   const [me, setMe] = useState<MeState | null>(null);
   const [view, setView] = useState<"login" | "lobby" | "room" | "admin">(() => isAdminRoute() ? "admin" : "login");
   const [profileOpen, setProfileOpen] = useState(false);
+  const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [announcement, setAnnouncement] = useState<AnnouncementPayload | null>(null);
   const [connectionState, setConnectionState] = useState<"connected" | "connecting" | "disconnected">(() => socket.connected ? "connected" : "connecting");
@@ -277,6 +278,11 @@ export function App() {
               <UserRound size={18} /> <span>个人设置</span>
             </button>
           )}
+          {me && lobby && (
+            <button className="soft-button top-leaderboard-button" title="排行榜" onClick={() => setLeaderboardOpen(true)}>
+              <Crown size={18} /> <span>排行榜</span>
+            </button>
+          )}
           <button className="icon-button" title={theme === "dark" ? "切换到日间模式" : "切换到夜间模式"} onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
             {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
           </button>
@@ -303,6 +309,7 @@ export function App() {
       {view === "admin" && lobby && <AdminPanel config={config} lobby={lobby} onBack={() => { if (window.location.hash === "#admin") window.location.hash = ""; setView(me ? "lobby" : "login"); }} onError={setNotice} />}
       {view === "room" && !room && <section className="panel">你暂时不在房间里。</section>}
       {profileOpen && me && <ProfilePanel config={config} me={me.player} onClose={() => setProfileOpen(false)} onUpdated={(player) => { setMe({ ...me, player }); localStorage.setItem("rps-online-name", player.name); localStorage.setItem("rps-online-gender", player.genderId); }} onError={setNotice} />}
+      {leaderboardOpen && lobby && <GlobalLeaderboardPanel players={lobby.players} onClose={() => setLeaderboardOpen(false)} />}
     </main>
   );
 }
@@ -1595,6 +1602,103 @@ function Leaderboard({ title, players }: { title: string; players: PublicPlayer[
       </div>
     </div>
   );
+}
+
+type GlobalLeaderboardTab = "positive" | "negative" | "nameWar" | "giveaway";
+
+function GlobalLeaderboardPanel({ players, onClose }: { players: PublicPlayer[]; onClose: () => void }) {
+  const [tab, setTab] = useState<GlobalLeaderboardTab>("positive");
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const hasTimer = players.some((player) =>
+      (player.nameWarRenameProtectedUntil && player.nameWarRenameProtectedUntil > Date.now()) ||
+      (player.giveawayBoardExpiresAt && player.giveawayBoardExpiresAt > Date.now())
+    );
+    if (!hasTimer) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [players]);
+
+  const ranked = leaderboardPlayers(players, tab).slice(0, 50);
+  const title = tab === "positive" ? "正分榜" : tab === "negative" ? "负分榜" : tab === "nameWar" ? "名字争夺战榜" : "白给榜";
+  return (
+    <div className="modal-backdrop leaderboard-backdrop" onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="leaderboard-modal">
+        <div className="modal-title">
+          <div>
+            <h2><Crown size={20} /> 排行榜</h2>
+            <p className="hint">当前服务器运行期间的玩家数据，每类最多显示 50 名。</p>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose}>×</button>
+        </div>
+        <div className="segmented leaderboard-tabs">
+          <button className={tab === "positive" ? "active" : ""} onClick={() => setTab("positive")}>正分</button>
+          <button className={tab === "negative" ? "active" : ""} onClick={() => setTab("negative")}>负分</button>
+          <button className={tab === "nameWar" ? "active" : ""} onClick={() => setTab("nameWar")}>名争</button>
+          <button className={tab === "giveaway" ? "active" : ""} onClick={() => setTab("giveaway")}>白给</button>
+        </div>
+        <div className="global-leaderboard-list">
+          <h3>{title}</h3>
+          {ranked.map((player, index) => (
+            <article className="global-rank-card" key={`${tab}-${player.id}`}>
+              <div className="global-rank-main">
+                <span className="rank-index">#{index + 1}</span>
+                <PlayerBadge player={player} compact />
+                <span className={`online-dot ${player.connected ? "online" : "offline"}`}>{player.connected ? "在线" : "离线"}</span>
+              </div>
+              <div className="global-rank-stats">
+                <span>{player.stats.rankedPoints} 分</span>
+                <span>{player.stats.wins}胜 {player.stats.losses}负 {player.stats.draws}平</span>
+                <span>{player.stats.punishments} 惩罚</span>
+                <span>胜率 {winRateText(player)}</span>
+              </div>
+              <LeaderboardExtra player={player} tab={tab} now={now} />
+            </article>
+          ))}
+          {ranked.length === 0 && <p className="empty">暂无玩家上榜</p>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function leaderboardPlayers(players: PublicPlayer[], tab: GlobalLeaderboardTab) {
+  const copy = [...players];
+  if (tab === "positive") return copy.filter((player) => player.stats.rankedPoints > 0).sort((a, b) => b.stats.rankedPoints - a.stats.rankedPoints || b.stats.wins - a.stats.wins);
+  if (tab === "negative") return copy.filter((player) => player.stats.rankedPoints < 0).sort((a, b) => a.stats.rankedPoints - b.stats.rankedPoints || b.stats.losses - a.stats.losses);
+  if (tab === "nameWar") {
+    return copy
+      .filter((player) => player.nameWarEnabled || player.nameWarPunished)
+      .sort((a, b) => Number(Boolean(b.nameWarPunished)) - Number(Boolean(a.nameWarPunished)) || a.stats.rankedPoints - b.stats.rankedPoints);
+  }
+  return copy
+    .filter((player) => player.giveawayEnabled || (player.giveawayValue || 0) > 0)
+    .sort((a, b) => (b.giveawayValue || 0) - (a.giveawayValue || 0) || b.stats.rankedPoints - a.stats.rankedPoints);
+}
+
+function LeaderboardExtra({ player, tab, now }: { player: PublicPlayer; tab: GlobalLeaderboardTab; now: number }) {
+  if (tab === "nameWar") {
+    const protectedMs = player.nameWarRenameProtectedUntil ? Math.max(0, player.nameWarRenameProtectedUntil - now) : 0;
+    return (
+      <p className="global-rank-extra">
+        {player.nameWarPunished ? `失名中：${player.nameWarPenaltyName || "惩罚名生效"}` : "名字争夺战开启"}
+        {player.nameWarAllowRename ? " · 允许他人改名" : ""}
+        {protectedMs > 0 ? ` · 保护 ${formatDuration(protectedMs)}` : ""}
+      </p>
+    );
+  }
+  if (tab === "giveaway") {
+    const boardMs = player.giveawayBoardExpiresAt ? Math.max(0, player.giveawayBoardExpiresAt - now) : 0;
+    return (
+      <p className="global-rank-extra">
+        白给 {formatGiveawayValue(player.giveawayValue || 0)}%
+        {player.giveawayBoardText && boardMs > 0 ? ` · 已上板 ${formatDuration(boardMs)}` : ""}
+        {player.giveawayBoardText ? ` · 👍 ${player.giveawayBoardLikes || 0} / 👎 ${player.giveawayBoardDislikes || 0}` : ""}
+      </p>
+    );
+  }
+  return null;
 }
 
 function winRateText(player: PublicPlayer) {
