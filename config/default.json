@@ -88,6 +88,12 @@
     "loserPanelTitle": "名字争夺战失格者",
     "escapeTitle": "逃跑的人"
   },
+  "giveaway": {
+    "panelTitle": "白给自救板",
+    "panelDescription": "提交一点自我惩罚宣言，等待其他玩家点赞帮你降低白给值。",
+    "submitPlaceholder": "写下你的自我惩罚宣言...",
+    "emptyText": "还没有人在白给自救板上。"
+  },
   "bots": {
     "names": ["Bot 小蓝", "Bot 小粉", "随机拳机", "布布机器人"],
     "difficulties": [

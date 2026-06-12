@@ -68,6 +68,7 @@ const adminSocketIds = new Set<string>();
 const maxRoomChatMessages = 200;
 const maxLobbyMessages = 100;
 const roomHistoryPageSize = 20;
+const giveawayBoardDurationMs = 12 * 60 * 60 * 1000;
 const broadcastMetricWindowMs = 60_000;
 const recentBroadcasts: Array<{ type: "room" | "lobby"; bytes: number; at: number }> = [];
 let lobbyBroadcastTimer: NodeJS.Timeout | undefined;
@@ -209,6 +210,10 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
+function clampGiveawayValue(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value * 10) / 10));
+}
+
 function seatOf(room: RoomState, playerId: string): SeatKey | null {
   if (room.seats.A?.id === playerId) return "A";
   if (room.seats.B?.id === playerId) return "B";
@@ -292,6 +297,22 @@ function formatDisplayName(player: Pick<PublicPlayer, "genderLabel" | "stats" | 
 
 function playerShortName(player: Pick<PublicPlayer, "name" | "nameWarPunished" | "nameWarPenaltyName">) {
   return player.nameWarPunished && player.nameWarPenaltyName ? player.nameWarPenaltyName : player.name;
+}
+
+function refreshGiveawayBoard(player: PlayerState, now = Date.now()) {
+  if (!player.giveawayBoardExpiresAt || player.giveawayBoardExpiresAt > now) return;
+  player.giveawayBoardText = undefined;
+  player.giveawayBoardSubmittedAt = undefined;
+  player.giveawayBoardExpiresAt = undefined;
+  player.giveawayBoardLikes = 0;
+  player.giveawayBoardDislikes = 0;
+  player.giveawayBoardLikesThisHour = 0;
+  player.giveawayBoardLikeWindowStartedAt = undefined;
+}
+
+function addGiveawayValue(player: PlayerState, delta: number) {
+  player.giveawayValue = clampGiveawayValue((player.giveawayValue || 0) + delta);
+  refreshPlayerSnapshots(player);
 }
 
 function refreshNameWarState(player: PlayerState, now = Date.now()) {
@@ -476,6 +497,7 @@ function hideOpponentChoices(room: RoomState) {
 
 function lobbySnapshot(options: { includeConfig?: boolean } = {}) {
   for (const player of players.values()) {
+    refreshGiveawayBoard(player);
     if (refreshNameWarState(player)) refreshPlayerSnapshots(player);
   }
   const humanPlayers = [...players.values()].map(publicPlayer);
@@ -649,6 +671,11 @@ function createPlayer(name: string, genderId: string, token?: string): PlayerSta
     displayName: `${gender.genderLabel} - ${title} - ${name}`,
     connected: true,
     nameWarOriginalName: name,
+    giveawayEnabled: false,
+    giveawayValue: 0,
+    giveawayClicks: 0,
+    giveawayBoardLikes: 0,
+    giveawayBoardDislikes: 0,
     token: token || randomId(),
     stats: { wins: 0, losses: 0, draws: 0, punishments: 0, rankedPoints: 0, title, titleSegmentId: titleSegment?.id },
     recentMoves: []
@@ -707,6 +734,35 @@ function applyForgiveAdvantage(room: RoomState, result: "A" | "B" | "draw") {
   const targetSeat = seatOf(room, advantage.targetId);
   if (!beneficiarySeat || !targetSeat || beneficiarySeat === targetSeat) return result;
   return Math.random() < 0.66 ? beneficiarySeat : result;
+}
+
+function isHumanVsHumanRoom(room: RoomState) {
+  return Boolean(
+    room.seats.A &&
+    room.seats.B &&
+    !("isBot" in room.seats.A) &&
+    !("isBot" in room.seats.B)
+  );
+}
+
+function shouldTriggerGiveaway(player: PlayerState) {
+  return Boolean(player.giveawayEnabled && (player.giveawayValue || 0) > 0 && Math.random() * 100 < (player.giveawayValue || 0));
+}
+
+function giveawayForcedSeats(room: RoomState) {
+  if (!isHumanVsHumanRoom(room)) return [];
+  return (["A", "B"] as SeatKey[]).filter((seat) => {
+    const occupant = room.seats[seat];
+    if (!occupant || "isBot" in occupant) return false;
+    const player = players.get(occupant.id);
+    return player ? shouldTriggerGiveaway(player) : false;
+  });
+}
+
+function resultWithGiveaway(room: RoomState, baseResult: "A" | "B" | "draw", forcedSeats: SeatKey[]) {
+  if (forcedSeats.length === 1) return forcedSeats[0] === "A" ? "B" : "A";
+  if (forcedSeats.length >= 2) return "draw";
+  return applyForgiveAdvantage(room, baseResult);
 }
 
 function moveText(move: Move) {
@@ -796,7 +852,8 @@ function finishRoundIfReady(room: RoomState) {
   if (!room.choices.A || !room.choices.B) return;
   const choiceA = room.choices.A as Move;
   const choiceB = room.choices.B as Move;
-  const result = applyForgiveAdvantage(room, judge(choiceA, choiceB));
+  const giveawaySeats = giveawayForcedSeats(room);
+  const result = resultWithGiveaway(room, judge(choiceA, choiceB), giveawaySeats);
   const punishedPlayers = punishmentPlayersForResult(room, result);
   const punishedNames = punishedPlayers.map((player) => playerShortName(player));
   const punishment = currentPunishment(room);
@@ -808,6 +865,15 @@ function finishRoundIfReady(room: RoomState) {
   const playerB = room.seats.B && !("isBot" in room.seats.B) ? players.get(room.seats.B.id) : undefined;
   if (playerA) playerA.recentMoves.push(choiceA);
   if (playerB) playerB.recentMoves.push(choiceB);
+  for (const seat of giveawaySeats) {
+    const player = seat === "A" ? playerA : playerB;
+    if (player) addGiveawayValue(player, 2);
+  }
+  const giveawayText = giveawaySeats.length
+    ? giveawaySeats.length >= 2
+      ? "双方白给同时触发"
+      : `${occupantName(room.seats[giveawaySeats[0]])} 触发强制白给`
+    : "";
 
   if (result === "draw") {
     if (playerA) playerA.stats.draws += 1;
@@ -820,6 +886,7 @@ function finishRoundIfReady(room: RoomState) {
     } else {
       room.resultText = `平局：双方都出了 ${moveText(choiceA)}`;
     }
+    if (giveawayText) room.resultText = `${giveawayText}：${room.resultText}`;
   } else {
     const winnerSeat = result;
     const loserSeat = result === "A" ? "B" : "A";
@@ -832,7 +899,7 @@ function finishRoundIfReady(room: RoomState) {
     room.seatStats[winnerSeat].wins += 1;
     room.seatStats[loserSeat].losses += 1;
     if (room.settings.enableRanked) applyRanked(winner, loser, room.settings.stake);
-    room.resultText = `${winnerSeat} 获胜：A 出 ${moveText(choiceA)}，B 出 ${moveText(choiceB)}`;
+    room.resultText = giveawayText || `${winnerSeat} 获胜：A 出 ${moveText(choiceA)}，B 出 ${moveText(choiceB)}`;
   }
 
   addRoundHistory(room, {
@@ -1343,7 +1410,7 @@ io.on("connection", (socket) => {
     broadcastLobby();
   });
 
-  socket.on("player:updateProfile", ({ name, genderId, nameWarEnabled, nameWarAllowRename }: { name: string; genderId: string; nameWarEnabled?: boolean; nameWarAllowRename?: boolean }, reply) => {
+  socket.on("player:updateProfile", ({ name, genderId, nameWarEnabled, nameWarAllowRename, giveawayEnabled }: { name: string; genderId: string; nameWarEnabled?: boolean; nameWarAllowRename?: boolean; giveawayEnabled?: boolean }, reply) => {
     const player = getPlayer(socket.id);
     if (!player) return reply?.({ error: "请先进入大厅" });
     const cleanName = String(name || "").trim().slice(0, 12);
@@ -1355,6 +1422,7 @@ io.on("connection", (socket) => {
     const nextAllowRename = nextNameWarEnabled && Boolean(nameWarAllowRename);
     const nameWarChanged = nextNameWarEnabled !== Boolean(player.nameWarEnabled);
     const allowRenameChanged = nextAllowRename !== Boolean(player.nameWarAllowRename);
+    const nextGiveawayEnabled = Boolean(giveawayEnabled);
     // 名字会出现在大厅、排行榜、房间座位和聊天里，所以只给“改名”做冷却；
     // 性别标签允许随时调整，避免玩家只是换阵营标签也被卡住。
     if (nameChanged && (player.nameWarEnabled || nextNameWarEnabled)) {
@@ -1367,6 +1435,9 @@ io.on("connection", (socket) => {
     if ((nameWarChanged || allowRenameChanged) && player.nameWarToggledAt && now - player.nameWarToggledAt < 43_200_000) {
       const hours = Math.ceil((43_200_000 - (now - player.nameWarToggledAt)) / 3_600_000);
       return reply?.({ error: `名字争夺战冷却中，请 ${hours} 小时后再试` });
+    }
+    if (player.giveawayEnabled && !nextGiveawayEnabled && (player.giveawayValue || 0) > 0) {
+      return reply?.({ error: "白给值归零前不能关闭白给模式" });
     }
 
     if (nameChanged) {
@@ -1386,12 +1457,88 @@ io.on("connection", (socket) => {
     applyGender(player, genderId);
     refreshNameWarState(player, now);
     if (exitedHardMode) player.stats.title = config.nameWar.escapeTitle || "逃跑的人";
+    player.giveawayEnabled = nextGiveawayEnabled;
+    if (!player.giveawayEnabled && (player.giveawayValue || 0) <= 0) {
+      player.giveawayValue = 0;
+      player.giveawayBoardText = undefined;
+      player.giveawayBoardSubmittedAt = undefined;
+      player.giveawayBoardExpiresAt = undefined;
+    }
     if (nameChanged) player.profileUpdatedAt = now;
     player.displayName = formatDisplayName(player);
     refreshPlayerSnapshots(player);
     reply?.({ player: publicPlayer(player) });
     broadcastLobby();
     if (player.roomId) broadcastRoom(player.roomId);
+  });
+
+  socket.on("giveaway:boost", (_payload, reply) => {
+    const player = getPlayer(socket.id);
+    const room = player?.roomId ? rooms.get(player.roomId) : undefined;
+    if (!player || !room) return reply?.({ error: "你不在房间中" });
+    if (!player.giveawayEnabled) return reply?.({ error: "请先在个人设置开启白给模式" });
+    if (!seatOf(room, player.id)) return reply?.({ error: "只有战斗席玩家可以白给" });
+    if (!isHumanVsHumanRoom(room)) return reply?.({ error: "Bot 对战不能使用白给模式" });
+    if (room.phase === "punishment") return reply?.({ error: "惩罚阶段不能增加白给值" });
+    addGiveawayValue(player, 2);
+    player.giveawayClicks = (player.giveawayClicks || 0) + 1;
+    reply?.({ player: publicPlayer(player) });
+    broadcastLobby();
+    broadcastRoom(room.id);
+  });
+
+  socket.on("giveaway:submitBoard", ({ text }: { text: string }, reply) => {
+    const player = getPlayer(socket.id);
+    if (!player) return reply?.({ error: "请先进入游戏" });
+    if (!player.giveawayEnabled || (player.giveawayValue || 0) <= 0) return reply?.({ error: "白给值大于 0% 时才能上板自救" });
+    const cleanText = String(text || "").trim().slice(0, 300);
+    if (cleanText.length < 2) return reply?.({ error: "自我惩罚宣言至少需要 2 个字" });
+    const now = Date.now();
+    player.giveawayBoardText = cleanText;
+    player.giveawayBoardSubmittedAt = now;
+    player.giveawayBoardExpiresAt = now + giveawayBoardDurationMs;
+    player.giveawayBoardLikes = 0;
+    player.giveawayBoardDislikes = 0;
+    player.giveawayBoardLikeWindowStartedAt = now;
+    player.giveawayBoardLikesThisHour = 0;
+    reply?.({ player: publicPlayer(player) });
+    broadcastLobby();
+  });
+
+  socket.on("giveaway:vote", ({ targetId, vote }: { targetId: string; vote: "like" | "dislike" }, reply) => {
+    const actor = getPlayer(socket.id);
+    const target = players.get(targetId);
+    if (!actor) return reply?.({ error: "请先进入游戏" });
+    if (!target) return reply?.({ error: "上板玩家不存在" });
+    refreshGiveawayBoard(target);
+    if (actor.id === target.id) return reply?.({ error: "不能给自己投票" });
+    if (!target.giveawayBoardText || !target.giveawayBoardExpiresAt || target.giveawayBoardExpiresAt <= Date.now()) return reply?.({ error: "这条自救内容已经不在板上" });
+    if (vote !== "like" && vote !== "dislike") return reply?.({ error: "投票类型不正确" });
+    const now = Date.now();
+    if (!actor.giveawayVoteWindowStartedAt || now - actor.giveawayVoteWindowStartedAt >= 3_600_000) {
+      actor.giveawayVoteWindowStartedAt = now;
+      actor.giveawayVoteCount = 0;
+    }
+    if ((actor.giveawayVoteCount || 0) >= 3) return reply?.({ error: "你本小时已经操作 3 次白给自救板" });
+
+    if (vote === "like") {
+      if (!target.giveawayBoardLikeWindowStartedAt || now - target.giveawayBoardLikeWindowStartedAt >= 3_600_000) {
+        target.giveawayBoardLikeWindowStartedAt = now;
+        target.giveawayBoardLikesThisHour = 0;
+      }
+      if ((target.giveawayBoardLikesThisHour || 0) >= 3) return reply?.({ error: "这个玩家本小时点赞降值已满" });
+      target.giveawayBoardLikesThisHour = (target.giveawayBoardLikesThisHour || 0) + 1;
+      target.giveawayBoardLikes = (target.giveawayBoardLikes || 0) + 1;
+      addGiveawayValue(target, -1);
+    } else {
+      target.giveawayBoardDislikes = (target.giveawayBoardDislikes || 0) + 1;
+      addGiveawayValue(target, 0.1);
+    }
+    actor.giveawayVoteCount = (actor.giveawayVoteCount || 0) + 1;
+    reply?.({ ok: true });
+    broadcastLobby();
+    if (target.roomId) broadcastRoom(target.roomId);
+    if (actor.roomId && actor.roomId !== target.roomId) broadcastRoom(actor.roomId);
   });
 
   socket.on("nameWar:renameTarget", ({ targetId, name }: { targetId: string; name: string }, reply) => {

@@ -606,6 +606,95 @@ main {
   align-content: start;
 }
 
+.giveaway-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.compact-title {
+  align-items: center;
+}
+
+.compact-title h2 {
+  font-size: 17px;
+}
+
+.compact-title span {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 9px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.giveaway-submit {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--pink) 26%, var(--panel-solid));
+  padding: 10px;
+}
+
+.giveaway-submit textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.giveaway-board-list {
+  display: grid;
+  gap: 8px;
+  max-height: 280px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.giveaway-card {
+  display: grid;
+  gap: 8px;
+  border: 1px solid color-mix(in srgb, var(--primary) 42%, var(--border));
+  border-radius: 8px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--primary) 10%, var(--panel-solid)), color-mix(in srgb, var(--pink) 22%, var(--panel-solid)));
+  padding: 10px;
+}
+
+.giveaway-card p {
+  margin: 0;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.giveaway-card small {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.giveaway-card-head,
+.giveaway-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.giveaway-card-head em {
+  border: 1px solid var(--pink-border);
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: color-mix(in srgb, var(--pink) 30%, var(--panel-solid));
+  color: var(--page-text);
+  font-style: normal;
+  font-weight: 900;
+}
+
+.giveaway-actions button {
+  flex: 1;
+  min-height: 34px;
+  padding: 7px 8px;
+}
+
 .create-modal {
   width: min(720px, 100%);
   max-height: min(760px, calc(100dvh - 36px - env(safe-area-inset-bottom)));
@@ -1348,6 +1437,11 @@ main {
   cursor: not-allowed;
   opacity: 0.55;
   transform: none;
+}
+
+.emoji-row .giveaway-move-button {
+  border-color: color-mix(in srgb, var(--pink-border) 80%, var(--primary));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--pink) 36%, var(--panel-solid)), color-mix(in srgb, var(--primary) 16%, var(--panel-soft)));
 }
 
 .choice-badge {
@@ -2430,6 +2524,15 @@ main {
   border-radius: 8px;
   background: color-mix(in srgb, var(--panel-solid) 82%, var(--pink));
   padding: 12px;
+}
+
+.giveaway-profile-card {
+  border-color: color-mix(in srgb, var(--primary) 54%, var(--pink-border));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--primary) 12%, var(--panel-solid)), color-mix(in srgb, var(--pink) 24%, var(--panel-solid)));
+}
+
+.danger-hint {
+  color: color-mix(in srgb, #d33d6a 82%, var(--page-text));
 }
 
 .profile-name-field small,

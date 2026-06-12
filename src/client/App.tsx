@@ -94,7 +94,16 @@ function playerSyncKey(player: PublicPlayer) {
     player.nameWarRenamedBy || "",
     player.nameWarRenamedByName || "",
     player.nameWarRenameWindowStartedAt || 0,
-    player.nameWarRenameCount || 0
+    player.nameWarRenameCount || 0,
+    player.giveawayEnabled ? "1" : "0",
+    player.giveawayValue || 0,
+    player.giveawayClicks || 0,
+    player.giveawayBoardText || "",
+    player.giveawayBoardExpiresAt || 0,
+    player.giveawayBoardLikes || 0,
+    player.giveawayBoardDislikes || 0,
+    player.giveawayVoteWindowStartedAt || 0,
+    player.giveawayVoteCount || 0
   ].join("|");
 }
 
@@ -463,13 +472,7 @@ function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lo
         </div>
         <div className="lobby-lower-grid">
           <NameWarLoserPanel title={config.nameWar.loserPanelTitle} losers={nameWarLosers} me={me} onError={onError} />
-          <div className="panel giveaway-placeholder-panel">
-            <h2>🎁 白给内容</h2>
-            <div>
-              <strong>开发中</strong>
-              <p className="hint">这里先预留给明天要放的白给玩法、活动或说明内容。</p>
-            </div>
-          </div>
+          <GiveawayPanel config={config} players={lobby.players} me={me} onError={onError} />
         </div>
       </div>
       <aside className="side-column">
@@ -838,6 +841,8 @@ function Room({ config, room, me, onBack, onError }: { config: AppConfig; room: 
   const myChoice = mySeat ? room.phase === "result" ? undefined : localChoice || room.choices[mySeat] : undefined;
   const resultChoice = mySeat ? room.revealedChoices?.[mySeat] : undefined;
   const canChoose = Boolean(mySeat && room.phase !== "punishment" && (room.phase === "choosing" || room.phase === "result") && room.seats.A && room.seats.B);
+  const roomHasBot = Boolean((room.seats.A && "isBot" in room.seats.A) || (room.seats.B && "isBot" in room.seats.B));
+  const canShowGiveawayButton = Boolean(mySeat && me.giveawayEnabled && !roomHasBot && room.seats.A && room.seats.B);
   const canGoSpectate = Boolean(mySeat && room.phase !== "punishment" && !room.choices[mySeat]);
   const roomPlayers = roomPlayerList(room);
   const punishedNames = punishedPlayerNames(room);
@@ -899,6 +904,15 @@ function Room({ config, room, me, onBack, onError }: { config: AppConfig; room: 
     } catch (error) {
       setLocalChoice(null);
       onError(error instanceof Error ? error.message : "出拳失败");
+    }
+  }
+
+  async function boostGiveaway() {
+    try {
+      await ask("giveaway:boost", {});
+      onError(`白给值 +2%，当前约 ${formatGiveawayValue((me.giveawayValue || 0) + 2)}%`);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "白给失败");
     }
   }
 
@@ -1002,6 +1016,7 @@ function Room({ config, room, me, onBack, onError }: { config: AppConfig; room: 
                 <button disabled={!canChoose || Boolean(myChoice)} onClick={() => choose("rock")}>✊<span>锤子</span></button>
                 <button disabled={!canChoose || Boolean(myChoice)} onClick={() => choose("scissors")}>✌️<span>剪刀</span></button>
                 <button disabled={!canChoose || Boolean(myChoice)} onClick={() => choose("paper")}>🖐️<span>布</span></button>
+                {canShowGiveawayButton && <button className="giveaway-move-button" disabled={room.phase === "punishment"} onClick={boostGiveaway}>🫴<span>白给</span></button>}
               </div>
             </div>
           )}
@@ -1548,6 +1563,83 @@ function NameWarLoserPanel({ title, losers, me, onError }: { title: string; lose
   );
 }
 
+function GiveawayPanel({ config, players, me, onError }: { config: AppConfig; players: PublicPlayer[]; me: PublicPlayer; onError: (message: string) => void }) {
+  const [text, setText] = useState("");
+  const [now, setNow] = useState(Date.now());
+  const activeBoards = players
+    .filter((player) => player.giveawayBoardText && player.giveawayBoardExpiresAt && player.giveawayBoardExpiresAt > now)
+    .sort((a, b) => (b.giveawayBoardSubmittedAt || 0) - (a.giveawayBoardSubmittedAt || 0));
+  const canSubmit = Boolean(me.giveawayEnabled && (me.giveawayValue || 0) > 0);
+
+  useEffect(() => {
+    const hasExpiry = players.some((player) => player.giveawayBoardExpiresAt && player.giveawayBoardExpiresAt > Date.now());
+    if (!hasExpiry) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [players]);
+
+  async function submitBoard() {
+    const cleanText = text.trim();
+    if (!cleanText) return;
+    try {
+      const result = await ask<{ player: PublicPlayer }>("giveaway:submitBoard", { text: cleanText });
+      if (result.player.id === me.id) setText("");
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "上板失败");
+    }
+  }
+
+  async function vote(targetId: string, voteType: "like" | "dislike") {
+    try {
+      await ask("giveaway:vote", { targetId, vote: voteType });
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "操作失败");
+    }
+  }
+
+  return (
+    <div className="panel giveaway-panel">
+      <div className="panel-title compact-title">
+        <h2>🫴 {config.giveaway.panelTitle}</h2>
+        <span>{activeBoards.length} 条</span>
+      </div>
+      <p className="hint">{config.giveaway.panelDescription}</p>
+      {canSubmit && (
+        <div className="giveaway-submit">
+          <textarea value={text} maxLength={300} onChange={(event) => setText(event.target.value)} placeholder={config.giveaway.submitPlaceholder} />
+          <button className="primary small" onClick={submitBoard}>上板 12 小时</button>
+        </div>
+      )}
+      {!canSubmit && me.giveawayEnabled && <p className="hint">你的白给值已经是 {formatGiveawayValue(me.giveawayValue || 0)}%，归零后可以在个人设置关闭模式。</p>}
+      <div className="giveaway-board-list">
+        {activeBoards.map((player) => {
+          const isSelf = player.id === me.id;
+          const expiresText = player.giveawayBoardExpiresAt ? formatDuration(player.giveawayBoardExpiresAt - now) : "";
+          return (
+            <article className="giveaway-card" key={player.id}>
+              <div className="giveaway-card-head">
+                <PlayerBadge player={player} />
+                <em>{formatGiveawayValue(player.giveawayValue || 0)}%</em>
+              </div>
+              <p>{player.giveawayBoardText}</p>
+              <small>剩余 {expiresText} · 👍 {player.giveawayBoardLikes || 0} · 👎 {player.giveawayBoardDislikes || 0}</small>
+              <div className="giveaway-actions">
+                <button disabled={isSelf} onClick={() => vote(player.id, "like")}>👍 -1%</button>
+                <button disabled={isSelf} onClick={() => vote(player.id, "dislike")}>👎 +0.1%</button>
+              </div>
+            </article>
+          );
+        })}
+        {activeBoards.length === 0 && <p className="empty">{config.giveaway.emptyText}</p>}
+      </div>
+    </div>
+  );
+}
+
+function formatGiveawayValue(value: number) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -1566,6 +1658,7 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
   const [genderId, setGenderId] = useState(me.genderId);
   const [nameWarEnabled, setNameWarEnabled] = useState(Boolean(me.nameWarEnabled));
   const [nameWarAllowRename, setNameWarAllowRename] = useState(Boolean(me.nameWarAllowRename));
+  const [giveawayEnabled, setGiveawayEnabled] = useState(Boolean(me.giveawayEnabled));
   const [now, setNow] = useState(Date.now());
   const decisive = me.stats.wins + me.stats.losses;
   const winRate = decisive === 0 ? 0 : Math.round((me.stats.wins / decisive) * 100);
@@ -1578,6 +1671,8 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
   const nameWarCooldownMs = me.nameWarToggledAt ? Math.max(0, 43_200_000 - (now - me.nameWarToggledAt)) : 0;
   const nameWarCooldownHours = Math.ceil(nameWarCooldownMs / 3_600_000);
   const nameLockedByWar = Boolean(me.nameWarEnabled || nameWarEnabled);
+  const giveawayValue = me.giveawayValue || 0;
+  const giveawayCannotClose = Boolean(me.giveawayEnabled && !giveawayEnabled && giveawayValue > 0);
 
   useEffect(() => {
     if (!cooldownMs && !nameWarCooldownMs) return;
@@ -1602,8 +1697,12 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
       onError(`名字争夺战冷却中，请 ${nameWarCooldownHours} 小时后再试`);
       return;
     }
+    if (giveawayCannotClose) {
+      onError("白给值归零前不能关闭白给模式");
+      return;
+    }
     try {
-      const result = await ask<{ player: PublicPlayer }>("player:updateProfile", { name, genderId, nameWarEnabled, nameWarAllowRename });
+      const result = await ask<{ player: PublicPlayer }>("player:updateProfile", { name, genderId, nameWarEnabled, nameWarAllowRename, giveawayEnabled });
       onUpdated(result.player);
       onError("个人资料已更新");
     } catch (error) {
@@ -1630,6 +1729,7 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
           <Stat label="惩罚次数" value={`${me.stats.punishments}`} />
           <Stat label="排位积分" value={`${me.stats.rankedPoints}`} />
           <Stat label="当前称号" value={me.nameWarPunished ? "已隐藏" : me.stats.title} />
+          <Stat label="白给值" value={`${formatGiveawayValue(giveawayValue)}%`} />
         </div>
 
         <div className="profile-edit">
@@ -1663,8 +1763,19 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
             {nameWarCooldownMs > 0 && <p className="hint">开关冷却：{nameWarCooldownHours} 小时</p>}
             {!nameWarEnabled && me.stats.rankedPoints < -999 && <p className="hint">保存关闭后，积分会拉回 -999。</p>}
           </div>
+          <div className="name-war-card giveaway-profile-card">
+            <div className="admin-card-title">
+              <strong>白给模式</strong>
+              <small>{me.giveawayEnabled ? `${formatGiveawayValue(giveawayValue)}%` : "未开启"}</small>
+            </div>
+            <Toggle label="开启白给模式" value={giveawayEnabled} disabled={giveawayCannotClose} onChange={setGiveawayEnabled} />
+            <p className="hint">开启后，真人对战会按白给值概率触发强制白给；Bot 对战不显示按钮，也不会触发。</p>
+            <p className="hint">出拳区点击“白给”会让白给值 +2%，触发强制白给后也会 +2%，最高 100%。</p>
+            <p className="hint">白给值归零后，才可以关闭这个模式。可以在大厅的白给自救板提交宣言，等待其他玩家点赞帮你降低。</p>
+            {giveawayCannotClose && <p className="hint danger-hint">当前还有 {formatGiveawayValue(giveawayValue)}% 白给值，暂时不能关闭。</p>}
+          </div>
           <div className="profile-action-row">
-            <button className="primary" disabled={(nameChanged && (cooldownMs > 0 || nameLockedByWar)) || ((nameWarChanged || nameWarAllowRenameChanged) && nameWarCooldownMs > 0)} onClick={saveProfile}><Save size={16} /> 保存个人资料</button>
+            <button className="primary" disabled={(nameChanged && (cooldownMs > 0 || nameLockedByWar)) || ((nameWarChanged || nameWarAllowRenameChanged) && nameWarCooldownMs > 0) || giveawayCannotClose} onClick={saveProfile}><Save size={16} /> 保存个人资料</button>
             <button onClick={onClose}>关闭个人设置</button>
           </div>
         </div>
@@ -1673,7 +1784,7 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
   );
 }
 
-type AdminSection = "site" | "factions" | "titles" | "punishments" | "roomTags" | "roomInfoTags" | "nameWar" | "accessControl" | "bots" | "messages" | "actions" | "advanced";
+type AdminSection = "site" | "factions" | "titles" | "punishments" | "roomTags" | "roomInfoTags" | "nameWar" | "giveaway" | "accessControl" | "bots" | "messages" | "actions" | "advanced";
 
 const roomInfoTagOrder = [
   { key: "phaseReady", label: "等待坐满" },
@@ -1819,6 +1930,7 @@ function AdminPanel({ config, lobby, onBack, onError }: { config: AppConfig; lob
     { id: "roomTags", label: "房间标签", detail: `${draft.roomTags.length} 个标签` },
     { id: "roomInfoTags", label: "房间信息标签", detail: "房间头部彩色标签" },
     { id: "nameWar", label: "名字争夺战", detail: draft.nameWar.penaltyPrefix },
+    { id: "giveaway", label: "白给模式", detail: draft.giveaway.panelTitle },
     { id: "accessControl", label: "防多开", detail: `${draft.accessControl.maxOnlinePerIp} 在线 / ${draft.accessControl.maxCreatesPer10Min} 新建` },
     { id: "bots", label: "Bot 设置", detail: `${draft.bots.difficulties.length} 个难度` },
     { id: "messages", label: "系统提示", detail: `${Object.keys(draft.messages).length} 条文案` },
@@ -2201,6 +2313,38 @@ function AdminPanel({ config, lobby, onBack, onError }: { config: AppConfig; lob
             </label>
           </div>
           <p className="hint">随机码固定为 4 位大写字母/数字；已有惩罚名不会因为你改前缀立刻变化，新触发的玩家会使用新前缀。</p>
+        </div>
+      );
+    }
+
+    if (activeSection === "giveaway") {
+      return (
+        <div className="config-section admin-section-card">
+          <AdminSectionHeader title="白给模式" subtitle="修改大厅白给自救板的标题、说明和输入提示。" />
+          <div className="admin-preview-card">
+            <span>预览</span>
+            <strong>{draft.giveaway.panelTitle}</strong>
+            <p>{draft.giveaway.panelDescription}</p>
+          </div>
+          <div className="config-row">
+            <label className="field-label">
+              <span>大厅面板标题</span>
+              <input value={draft.giveaway.panelTitle} maxLength={24} onChange={(event) => patch({ giveaway: { ...draft.giveaway, panelTitle: event.target.value } })} placeholder="白给自救板" />
+            </label>
+            <label className="field-label">
+              <span>提交框提示</span>
+              <input value={draft.giveaway.submitPlaceholder} maxLength={60} onChange={(event) => patch({ giveaway: { ...draft.giveaway, submitPlaceholder: event.target.value } })} placeholder="写下你的自我惩罚宣言..." />
+            </label>
+          </div>
+          <label className="field-label">
+            <span>面板说明</span>
+            <textarea value={draft.giveaway.panelDescription} maxLength={160} onChange={(event) => patch({ giveaway: { ...draft.giveaway, panelDescription: event.target.value } })} placeholder="提交一点自我惩罚宣言..." />
+          </label>
+          <label className="field-label">
+            <span>空状态文案</span>
+            <input value={draft.giveaway.emptyText} maxLength={60} onChange={(event) => patch({ giveaway: { ...draft.giveaway, emptyText: event.target.value } })} placeholder="还没有人在白给自救板上。" />
+          </label>
+          <p className="hint">规则固定：白给按钮 +2%，强制白给后 +2%；点赞 -1%，倒赞 +0.1%；真人对战生效，Bot 对战不生效。</p>
         </div>
       );
     }

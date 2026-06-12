@@ -66,6 +66,18 @@ export type PublicPlayer = {
   nameWarRenamedByName?: string;
   nameWarRenameWindowStartedAt?: number;
   nameWarRenameCount?: number;
+  giveawayEnabled?: boolean;
+  giveawayValue?: number;
+  giveawayClicks?: number;
+  giveawayBoardText?: string;
+  giveawayBoardSubmittedAt?: number;
+  giveawayBoardExpiresAt?: number;
+  giveawayBoardLikes?: number;
+  giveawayBoardDislikes?: number;
+  giveawayBoardLikeWindowStartedAt?: number;
+  giveawayBoardLikesThisHour?: number;
+  giveawayVoteWindowStartedAt?: number;
+  giveawayVoteCount?: number;
   roomId?: string;
   isAdmin?: boolean;
   stats: PublicStats;
@@ -294,6 +306,12 @@ export type AppConfig = {
     penaltyPrefix: string;
     loserPanelTitle: string;
     escapeTitle: string;
+  };
+  giveaway: {
+    panelTitle: string;
+    panelDescription: string;
+    submitPlaceholder: string;
+    emptyText: string;
   };
   bots: {
     names: string[];

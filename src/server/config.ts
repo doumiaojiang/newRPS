@@ -74,6 +74,12 @@ const defaultPlayerPunishmentRoomNamePool: RoomNamePool = {
 
 const defaultRoomTags = ["轻松", "认真", "排位", "惩罚", "聊天"];
 const defaultNameWar = { penaltyPrefix: "失名者", loserPanelTitle: "名字争夺战失格者", escapeTitle: "逃跑的人" };
+const defaultGiveaway = {
+  panelTitle: "白给自救板",
+  panelDescription: "提交一点自我惩罚宣言，等待其他玩家点赞帮你降低白给值。",
+  submitPlaceholder: "写下你的自我惩罚宣言...",
+  emptyText: "还没有人在白给自救板上。"
+};
 const defaultAccessControl = { maxOnlinePerIp: 3, maxCreatesPer10Min: 5 };
 const defaultRoomInfoTags: Record<string, RoomInfoTagStyle> = {
   phaseReady: { label: "等待坐满", textColor: "#225c8d", backgroundColor: "#e5f5ff", borderColor: "#9ed7ff" },
@@ -156,6 +162,12 @@ function normalizeConfig(input: AppConfig): AppConfig {
       penaltyPrefix: String(input.nameWar?.penaltyPrefix || defaultNameWar.penaltyPrefix).trim().slice(0, 16) || defaultNameWar.penaltyPrefix,
       loserPanelTitle: String(input.nameWar?.loserPanelTitle || defaultNameWar.loserPanelTitle).trim().slice(0, 24) || defaultNameWar.loserPanelTitle,
       escapeTitle: String(input.nameWar?.escapeTitle || defaultNameWar.escapeTitle).trim().slice(0, 18) || defaultNameWar.escapeTitle
+    },
+    giveaway: {
+      panelTitle: String(input.giveaway?.panelTitle || defaultGiveaway.panelTitle).trim().slice(0, 24) || defaultGiveaway.panelTitle,
+      panelDescription: String(input.giveaway?.panelDescription || defaultGiveaway.panelDescription).trim().slice(0, 160) || defaultGiveaway.panelDescription,
+      submitPlaceholder: String(input.giveaway?.submitPlaceholder || defaultGiveaway.submitPlaceholder).trim().slice(0, 60) || defaultGiveaway.submitPlaceholder,
+      emptyText: String(input.giveaway?.emptyText || defaultGiveaway.emptyText).trim().slice(0, 60) || defaultGiveaway.emptyText
     },
     playerPunishmentRoomNamePool: normalizeRoomNamePool(input.playerPunishmentRoomNamePool, defaultPlayerPunishmentRoomNamePool)
   };
@@ -322,6 +334,10 @@ export function validateConfig(input: AppConfig) {
   if (!input.nameWar?.penaltyPrefix?.trim()) throw new Error("名字争夺战前缀不能为空");
   if (!input.nameWar?.loserPanelTitle?.trim()) throw new Error("名字争夺战失格者标题不能为空");
   if (!input.nameWar?.escapeTitle?.trim()) throw new Error("名字争夺战逃跑称号不能为空");
+  if (!input.giveaway?.panelTitle?.trim()) throw new Error("白给模式面板标题不能为空");
+  if (!input.giveaway?.panelDescription?.trim()) throw new Error("白给模式说明不能为空");
+  if (!input.giveaway?.submitPlaceholder?.trim()) throw new Error("白给模式输入提示不能为空");
+  if (!input.giveaway?.emptyText?.trim()) throw new Error("白给模式空状态文案不能为空");
   if (!Number.isFinite(input.accessControl?.maxOnlinePerIp) || input.accessControl.maxOnlinePerIp < 1) throw new Error("同 IP 在线人数限制至少为 1");
   if (!Number.isFinite(input.accessControl?.maxCreatesPer10Min) || input.accessControl.maxCreatesPer10Min < 1) throw new Error("同 IP 10 分钟新建玩家限制至少为 1");
   if (!input.bots?.names?.length || !input.bots?.difficulties?.length) throw new Error("bot 名字和难度不能为空");
