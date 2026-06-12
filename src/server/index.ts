@@ -1647,6 +1647,11 @@ io.on("connection", (socket) => {
       target.giveawayBoardLikesThisHour = (target.giveawayBoardLikesThisHour || 0) + 1;
       target.giveawayBoardLikes = (target.giveawayBoardLikes || 0) + 1;
       addGiveawayValue(target, -1);
+      if ((target.giveawayValue || 0) <= 0) {
+        target.giveawayBoardText = undefined;
+        target.giveawayBoardSubmittedAt = undefined;
+        target.giveawayBoardExpiresAt = undefined;
+      }
     } else {
       target.giveawayBoardDislikes = (target.giveawayBoardDislikes || 0) + 1;
       addGiveawayValue(target, 0.1);

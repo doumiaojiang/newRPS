@@ -965,7 +965,7 @@ main {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 8px;
-  height: 188px;
+  height: 230px;
   min-height: 0;
   overflow: hidden;
 }
@@ -3297,7 +3297,7 @@ main {
   }
 
   .leaderboard-panel {
-    height: 176px;
+    height: 214px;
   }
 
   .name-war-loser-panel {
