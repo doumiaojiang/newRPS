@@ -13,6 +13,7 @@ import type {
   ChatMessage,
   Move,
   PublicPlayer,
+  RoundResult,
   RoundHistoryItem,
   RoomSettings,
   RoomSnapshot,
@@ -22,13 +23,25 @@ import type {
   Suggestion
 } from "../shared/types.js";
 
+type RpsMove = Exclude<Move, "giveaway" | "forfeit" | "noMove">;
+
 type PlayerState = PublicPlayer & {
   socketId?: string;
   token: string;
   ipAddress?: string;
   disconnectGraceTimer?: NodeJS.Timeout;
   disconnectTimer?: NodeJS.Timeout;
-  recentMoves: Move[];
+  recentMoves: RpsMove[];
+};
+
+type DisconnectForfeit = {
+  loserId: string;
+  loserSeat: SeatKey;
+  loserName: string;
+  winnerId: string;
+  winnerSeat: SeatKey;
+  winnerName: string;
+  stake: 5 | 10 | 20;
 };
 
 type RoomState = Omit<RoomSnapshot, "spectators" | "seats" | "roundHistoryTotal"> & {
@@ -40,6 +53,7 @@ type RoomState = Omit<RoomSnapshot, "spectators" | "seats" | "roundHistoryTotal"
     beneficiaryId: string;
     targetId: string;
   };
+  disconnectForfeits: Map<string, DisconnectForfeit>;
   createdAt: number;
 };
 
@@ -461,7 +475,8 @@ function emptySeatStats(): SeatStats {
   return { wins: 0, losses: 0, draws: 0, punishments: 0 };
 }
 
-function roundResultLabel(room: RoomState, result: "A" | "B" | "draw") {
+function roundResultLabel(room: RoomState, result: RoundResult) {
+  if (result === "doubleLoss") return "双方白给，双输";
   if (result === "draw") {
     if (room.settings.enableRanked && room.settings.tieDoublePunish) return `平局双扣 -${room.settings.stake}`;
     return "平局";
@@ -695,6 +710,73 @@ function applyRankedDrawPenalty(playerA: PlayerState | undefined, playerB: Playe
   if (playerB) updateRankedPoints(playerB, -stake);
 }
 
+function createDisconnectForfeit(room: RoomState, player: PlayerState) {
+  if (!room.settings.enableRanked || room.phase !== "choosing") return;
+  const loserSeat = seatOf(room, player.id);
+  if (!loserSeat) return;
+  const winnerSeat = loserSeat === "A" ? "B" : "A";
+  const winner = room.seats[winnerSeat];
+  if (!winner || "isBot" in winner) return;
+  room.disconnectForfeits.set(player.id, {
+    loserId: player.id,
+    loserSeat,
+    loserName: playerShortName(player),
+    winnerId: winner.id,
+    winnerSeat,
+    winnerName: occupantName(winner),
+    stake: room.settings.stake
+  });
+}
+
+function clearDisconnectForfeit(player: PlayerState) {
+  if (!player.roomId) return;
+  const room = rooms.get(player.roomId);
+  room?.disconnectForfeits.delete(player.id);
+}
+
+function applyDisconnectForfeit(room: RoomState, player: PlayerState) {
+  const forfeit = room.disconnectForfeits.get(player.id);
+  if (!forfeit) return false;
+  room.disconnectForfeits.delete(player.id);
+  const winner = players.get(forfeit.winnerId);
+  const loser = players.get(forfeit.loserId);
+  if (winner) {
+    winner.stats.wins += 1;
+    updateRankedPoints(winner, forfeit.stake);
+  }
+  if (loser) {
+    loser.stats.losses += 1;
+    updateRankedPoints(loser, -forfeit.stake);
+  }
+  room.score[forfeit.winnerSeat] += 1;
+  room.seatedScore[forfeit.winnerSeat] += 1;
+  room.seatStats[forfeit.winnerSeat].wins += 1;
+  room.seatStats[forfeit.loserSeat].losses += 1;
+  room.phase = "result";
+  room.status = "playing";
+  room.revealedChoices = undefined;
+  room.resultText = `${forfeit.loserName} 断线超时判负，${forfeit.winnerName}胜利，排位 ${forfeit.stake} 分已结算`;
+  addRoundHistory(room, {
+    id: randomId(),
+    round: room.roundHistory.length + 1,
+    at: Date.now(),
+    playerA: forfeit.loserSeat === "A" ? forfeit.loserName : forfeit.winnerName,
+    playerB: forfeit.loserSeat === "B" ? forfeit.loserName : forfeit.winnerName,
+    moveA: forfeit.loserSeat === "A" ? "forfeit" : (room.choices.A as Move | undefined) || "noMove",
+    moveB: forfeit.loserSeat === "B" ? "forfeit" : (room.choices.B as Move | undefined) || "noMove",
+    result: forfeit.winnerSeat,
+    resultLabel: `${forfeit.winnerName}胜利`,
+    resultText: room.resultText,
+    ranked: true,
+    stake: forfeit.stake,
+    punishmentTasks: [],
+    punishedNames: [],
+    proofs: []
+  });
+  roomNotice(room, room.resultText);
+  return true;
+}
+
 function updateRankedPoints(player: PlayerState, delta: number) {
   const minPoints = player.nameWarEnabled ? -1999 : -999;
   player.stats.rankedPoints = clamp(player.stats.rankedPoints + delta, minPoints, 999);
@@ -720,16 +802,21 @@ function isNameWarRenameTarget(player: PublicPlayer) {
   return Boolean(player.nameWarEnabled && player.nameWarAllowRename && player.nameWarPunished && player.stats.rankedPoints <= -1000);
 }
 
-function judge(a: Move, b: Move): "A" | "B" | "draw" {
+function isRpsMove(move: Move): move is RpsMove {
+  return move === "rock" || move === "scissors" || move === "paper";
+}
+
+function judge(a: RpsMove, b: RpsMove): RoundResult {
   if (a === b) return "draw";
   if ((a === "rock" && b === "scissors") || (a === "scissors" && b === "paper") || (a === "paper" && b === "rock")) return "A";
   return "B";
 }
 
-function applyForgiveAdvantage(room: RoomState, result: "A" | "B" | "draw") {
+function applyForgiveAdvantage(room: RoomState, result: RoundResult) {
   const advantage = room.forgiveAdvantage;
   if (!advantage) return result;
   room.forgiveAdvantage = undefined;
+  if (result === "doubleLoss") return result;
   const beneficiarySeat = seatOf(room, advantage.beneficiaryId);
   const targetSeat = seatOf(room, advantage.targetId);
   if (!beneficiarySeat || !targetSeat || beneficiarySeat === targetSeat) return result;
@@ -752,6 +839,7 @@ function shouldTriggerGiveaway(player: PlayerState) {
 function giveawayForcedSeats(room: RoomState) {
   if (!isHumanVsHumanRoom(room)) return [];
   return (["A", "B"] as SeatKey[]).filter((seat) => {
+    if (room.choices[seat] === "giveaway") return false;
     const occupant = room.seats[seat];
     if (!occupant || "isBot" in occupant) return false;
     const player = players.get(occupant.id);
@@ -759,26 +847,30 @@ function giveawayForcedSeats(room: RoomState) {
   });
 }
 
-function resultWithGiveaway(room: RoomState, baseResult: "A" | "B" | "draw", forcedSeats: SeatKey[]) {
-  if (forcedSeats.length === 1) return forcedSeats[0] === "A" ? "B" : "A";
-  if (forcedSeats.length >= 2) return "draw";
+function resultWithGiveaway(room: RoomState, baseResult: RoundResult, finalChoices: Record<SeatKey, Move>) {
+  const giveawaySeats = (["A", "B"] as SeatKey[]).filter((seat) => finalChoices[seat] === "giveaway");
+  if (giveawaySeats.length === 1) return giveawaySeats[0] === "A" ? "B" : "A";
+  if (giveawaySeats.length >= 2) return "doubleLoss";
   return applyForgiveAdvantage(room, baseResult);
 }
 
 function moveText(move: Move) {
+  if (move === "noMove") return "未出拳";
+  if (move === "forfeit") return "断线判负";
+  if (move === "giveaway") return "白给";
   return move === "rock" ? "石头" : move === "scissors" ? "剪刀" : "布";
 }
 
 function botMove(room: RoomState, bot: BotPlayer): Move {
-  const moves: Move[] = ["rock", "scissors", "paper"];
+  const moves: RpsMove[] = ["rock", "scissors", "paper"];
   const opponent = room.seats.A && !("isBot" in room.seats.A) ? players.get(room.seats.A.id) : undefined;
   const difficulty = config.bots.difficulties.find((item) => item.id === bot.difficulty);
   const strategy = difficulty?.strategy || (bot.difficulty === "normal" ? "counter" : bot.difficulty === "chaos" ? "chaos" : "random");
   const opponentSeat = seatOf(room, opponent?.id || "");
-  const currentOpponentMove = opponentSeat ? room.choices[opponentSeat] as Move | undefined : undefined;
+  const currentOpponentMove = opponentSeat && isRpsMove(room.choices[opponentSeat] as Move) ? room.choices[opponentSeat] as RpsMove : undefined;
   if (strategy === "win" && currentOpponentMove) return winningMoveAgainst(currentOpponentMove);
   if (strategy === "throw" && currentOpponentMove) return losingMoveAgainst(currentOpponentMove);
-  if (strategy === "chaos" && Math.random() < 0.35 && room.revealedChoices?.B) return room.revealedChoices.B;
+  if (strategy === "chaos" && Math.random() < 0.35 && isRpsMove(room.revealedChoices?.B as Move)) return room.revealedChoices!.B as RpsMove;
   if (strategy === "counter" && opponent?.recentMoves.length) {
     const last = opponent.recentMoves[opponent.recentMoves.length - 1];
     return winningMoveAgainst(last);
@@ -786,11 +878,11 @@ function botMove(room: RoomState, bot: BotPlayer): Move {
   return moves[Math.floor(Math.random() * moves.length)];
 }
 
-function winningMoveAgainst(move: Move): Move {
+function winningMoveAgainst(move: RpsMove): RpsMove {
   return move === "rock" ? "paper" : move === "paper" ? "scissors" : "rock";
 }
 
-function losingMoveAgainst(move: Move): Move {
+function losingMoveAgainst(move: RpsMove): RpsMove {
   return move === "rock" ? "scissors" : move === "paper" ? "rock" : "paper";
 }
 
@@ -853,38 +945,55 @@ function finishRoundIfReady(room: RoomState) {
   const choiceA = room.choices.A as Move;
   const choiceB = room.choices.B as Move;
   const giveawaySeats = giveawayForcedSeats(room);
-  const result = resultWithGiveaway(room, judge(choiceA, choiceB), giveawaySeats);
+  const finalChoices: Record<SeatKey, Move> = {
+    A: giveawaySeats.includes("A") ? "giveaway" : choiceA,
+    B: giveawaySeats.includes("B") ? "giveaway" : choiceB
+  };
+  const baseResult = finalChoices.A === "giveaway" || finalChoices.B === "giveaway"
+    ? "draw"
+    : judge(finalChoices.A as RpsMove, finalChoices.B as RpsMove);
+  const result = resultWithGiveaway(room, baseResult, finalChoices);
   const punishedPlayers = punishmentPlayersForResult(room, result);
   const punishedNames = punishedPlayers.map((player) => playerShortName(player));
   const punishment = currentPunishment(room);
   const punishmentTasks = buildPunishmentTasks(room, punishedPlayers, result, punishment);
   room.phase = "result";
-  room.revealedChoices = { A: choiceA, B: choiceB };
+  room.revealedChoices = finalChoices;
 
   const playerA = room.seats.A && !("isBot" in room.seats.A) ? players.get(room.seats.A.id) : undefined;
   const playerB = room.seats.B && !("isBot" in room.seats.B) ? players.get(room.seats.B.id) : undefined;
-  if (playerA) playerA.recentMoves.push(choiceA);
-  if (playerB) playerB.recentMoves.push(choiceB);
+  if (playerA && isRpsMove(choiceA)) playerA.recentMoves.push(choiceA);
+  if (playerB && isRpsMove(choiceB)) playerB.recentMoves.push(choiceB);
   for (const seat of giveawaySeats) {
     const player = seat === "A" ? playerA : playerB;
     if (player) addGiveawayValue(player, 2);
   }
-  const giveawayText = giveawaySeats.length
-    ? giveawaySeats.length >= 2
-      ? "双方白给同时触发"
-      : `${occupantName(room.seats[giveawaySeats[0]])} 触发强制白给`
+  const giveawayResultSeats = (["A", "B"] as SeatKey[]).filter((seat) => finalChoices[seat] === "giveaway");
+  const giveawayText = giveawayResultSeats.length
+    ? giveawayResultSeats.length >= 2
+      ? "双方白给"
+      : `${occupantName(room.seats[giveawayResultSeats[0]])} 白给`
     : "";
 
-  if (result === "draw") {
+  if (result === "doubleLoss") {
+    if (playerA) playerA.stats.losses += 1;
+    if (playerB) playerB.stats.losses += 1;
+    room.seatStats.A.losses += 1;
+    room.seatStats.B.losses += 1;
+    if (room.settings.enableRanked) applyRankedDrawPenalty(playerA, playerB, room.settings.stake);
+    room.resultText = room.settings.enableRanked
+      ? `双方白给，双输：双方各扣 ${room.settings.stake} 分`
+      : "双方白给，双输";
+  } else if (result === "draw") {
     if (playerA) playerA.stats.draws += 1;
     if (playerB) playerB.stats.draws += 1;
     room.seatStats.A.draws += 1;
     room.seatStats.B.draws += 1;
     if (room.settings.enableRanked && room.settings.tieDoublePunish) {
       applyRankedDrawPenalty(playerA, playerB, room.settings.stake);
-      room.resultText = `平局双罚：双方都出了 ${moveText(choiceA)}，双方各扣 ${room.settings.stake} 分`;
+      room.resultText = `平局双罚：双方都出了 ${moveText(finalChoices.A)}，双方各扣 ${room.settings.stake} 分`;
     } else {
-      room.resultText = `平局：双方都出了 ${moveText(choiceA)}`;
+      room.resultText = `平局：双方都出了 ${moveText(finalChoices.A)}`;
     }
     if (giveawayText) room.resultText = `${giveawayText}：${room.resultText}`;
   } else {
@@ -899,7 +1008,9 @@ function finishRoundIfReady(room: RoomState) {
     room.seatStats[winnerSeat].wins += 1;
     room.seatStats[loserSeat].losses += 1;
     if (room.settings.enableRanked) applyRanked(winner, loser, room.settings.stake);
-    room.resultText = giveawayText || `${winnerSeat} 获胜：A 出 ${moveText(choiceA)}，B 出 ${moveText(choiceB)}`;
+    room.resultText = giveawayText
+      ? `${giveawayText}，${occupantName(room.seats[winnerSeat])}胜利`
+      : `${winnerSeat} 获胜：A 出 ${moveText(finalChoices.A)}，B 出 ${moveText(finalChoices.B)}`;
   }
 
   addRoundHistory(room, {
@@ -908,8 +1019,8 @@ function finishRoundIfReady(room: RoomState) {
     at: Date.now(),
     playerA: occupantName(room.seats.A),
     playerB: occupantName(room.seats.B),
-    moveA: choiceA,
-    moveB: choiceB,
+    moveA: finalChoices.A,
+    moveB: finalChoices.B,
     result,
     resultLabel: roundResultLabel(room, result),
     resultText: room.resultText ?? "",
@@ -924,10 +1035,12 @@ function finishRoundIfReady(room: RoomState) {
   setupPunishmentOrNext(room, result);
 }
 
-function punishmentPlayersForResult(room: RoomState, result: "A" | "B" | "draw") {
+function punishmentPlayersForResult(room: RoomState, result: RoundResult) {
   if (!room.settings.enablePunishment) return [];
   const punishSeats: SeatKey[] = [];
-  if (result === "draw") {
+  if (result === "doubleLoss") {
+    punishSeats.push("A", "B");
+  } else if (result === "draw") {
     if (room.settings.tieDoublePunish) punishSeats.push("A", "B");
   } else {
     punishSeats.push(result === "A" ? "B" : "A");
@@ -1018,7 +1131,7 @@ function punishmentNameForRoom(room: RoomState, punishment?: AppConfig["punishme
   return punishment?.name;
 }
 
-function buildPunishmentTasks(room: RoomState, punishedPlayers: PlayerState[], result: "A" | "B" | "draw", punishment?: AppConfig["punishments"][number]) {
+function buildPunishmentTasks(room: RoomState, punishedPlayers: PlayerState[], result: RoundResult, punishment?: AppConfig["punishments"][number]) {
   return punishedPlayers.map((player) => {
     const assigner = room.settings.punishmentSource === "player" ? taskAssigner(room, player.id) : undefined;
     const systemTask = room.settings.punishmentSource === "player" ? undefined : punishmentTaskForPlayer(player, punishment);
@@ -1127,13 +1240,15 @@ function applyForgiveReview(room: RoomState, reviewerId: string, targetId: strin
   return "双方互相放过，下一局正常开始。";
 }
 
-function setupPunishmentOrNext(room: RoomState, result: "A" | "B" | "draw") {
+function setupPunishmentOrNext(room: RoomState, result: RoundResult) {
   if (!room.settings.enablePunishment) {
     return;
   }
 
   const punishSeats: SeatKey[] = [];
-  if (result === "draw") {
+  if (result === "doubleLoss") {
+    punishSeats.push("A", "B");
+  } else if (result === "draw") {
     if (room.settings.tieDoublePunish) punishSeats.push("A", "B");
   } else {
     punishSeats.push(result === "A" ? "B" : "A");
@@ -1305,6 +1420,7 @@ function resetForNextRound(room: RoomState) {
 
 function clearSeatForPlayer(room: RoomState, seat: SeatKey) {
   const leavingId = room.seats[seat]?.id;
+  if (leavingId) room.disconnectForfeits.delete(leavingId);
   room.seats[seat] = null;
   room.ready[seat] = false;
   room.choices[seat] = undefined;
@@ -1382,6 +1498,7 @@ io.on("connection", (socket) => {
     applyGender(player, genderId);
     refreshNameWarState(player);
     clearDisconnectHold(player);
+    clearDisconnectForfeit(player);
     if (wasDisconnected && hadDisconnectHold) serverStats.reconnects += 1;
     refreshPlayerSnapshots(player);
     if (player.roomId) {
@@ -1645,6 +1762,7 @@ io.on("connection", (socket) => {
       roundHistory: [],
       chat: [],
       lockedSeatIds: new Set(),
+      disconnectForfeits: new Map(),
       createdAt: Date.now()
     };
     rooms.set(roomId, room);
@@ -1743,14 +1861,22 @@ io.on("connection", (socket) => {
     const player = getPlayer(socket.id);
     const room = player?.roomId ? rooms.get(player.roomId) : undefined;
     if (!player || !room) return reply?.({ error: "你不在房间中" });
+    if (!["rock", "scissors", "paper", "giveaway"].includes(move)) return reply?.({ error: "出拳无效" });
     const seat = seatOf(room, player.id);
     if (!seat) return reply?.({ error: "只有战斗席玩家可以出拳" });
     if (!room.seats.A || !room.seats.B) return reply?.({ error: "需要双方都坐下才能出拳" });
+    if (move === "giveaway" && (!player.giveawayEnabled || !isHumanVsHumanRoom(room))) {
+      return reply?.({ error: "白给只在真人对战并开启白给模式后可用" });
+    }
     if (room.phase === "punishment") return reply?.({ error: "惩罚完成前不能出拳" });
     if (room.phase === "result") prepareNextChoice(room);
     if (room.phase !== "choosing") return reply?.({ error: "现在还不能出拳" });
     if (room.choices[seat]) return reply?.({ error: "你已经出拳，不能修改" });
     room.choices[seat] = move;
+    if (move === "giveaway") {
+      player.giveawayClicks = (player.giveawayClicks || 0) + 1;
+      addGiveawayValue(player, 2);
+    }
     maybeBotAct(room);
     const oldStatus = room.status;
     finishRoundIfReady(room);
@@ -2029,6 +2155,7 @@ io.on("connection", (socket) => {
       if (current.roomId) {
         const room = rooms.get(current.roomId);
         if (room) {
+          createDisconnectForfeit(room, current);
           roomNotice(room, `${playerShortName(current)} 断线了，保留座位 60 秒。`);
           broadcastRoom(room.id);
         }
@@ -2040,15 +2167,7 @@ io.on("connection", (socket) => {
         if (!expired || expired.connected) return;
         if (expired.roomId) {
           const room = rooms.get(expired.roomId);
-          const seat = room ? seatOf(room, expired.id) : null;
-          if (room?.settings.enableRanked && room.phase === "choosing" && seat) {
-            const otherSeat = seat === "A" ? "B" : "A";
-            const other = room.seats[otherSeat];
-            if (other && !("isBot" in other)) players.get(other.id)!.stats.wins += 1;
-            expired.stats.losses += 1;
-            updateRankedPoints(expired, -room.settings.stake);
-            if (other && !("isBot" in other)) updateRankedPoints(players.get(other.id)!, room.settings.stake);
-          }
+          if (room) applyDisconnectForfeit(room, expired);
           leaveRoom(expired, "disconnectTimeout");
         }
         // 超过可见倒计时后只清掉房间/座位保护，不删除玩家档案。

@@ -1,7 +1,7 @@
 import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from "react";
 import { Crown, DoorOpen, Download, Eye, MessageCircle, Moon, Pencil, RefreshCcw, Save, Settings, Shield, Sun, Swords, Upload, UserRound, Users } from "lucide-react";
 import { socket } from "./main";
-import type { AppConfig, BotDifficulty, ChatMessage, GenderFaction, LobbySnapshot, Move, PublicPlayer, PunishmentTaskConfig, RoomInfoTagStyle, RoomNamePool, RoomSettings, RoomSnapshot, SeatKey } from "../shared/types";
+import type { AppConfig, BotDifficulty, ChatMessage, GenderFaction, LobbySnapshot, Move, PublicPlayer, PunishmentTaskConfig, RoomInfoTagStyle, RoomNamePool, RoomSettings, RoomSnapshot, RoundResult, SeatKey } from "../shared/types";
 
 const tokenKey = "rps-online-token";
 const defaultRoomName = "新的锤子剪刀布房间";
@@ -335,6 +335,7 @@ function PlayerBadge({ player, compact = false }: { player: PublicPlayer; compac
     return (
       <span className={`player-badge name-war-badge ${compact ? "compact" : ""}`}>
         <strong>{player.nameWarPenaltyName}</strong>
+        <GiveawayChip player={player} />
       </span>
     );
   }
@@ -343,8 +344,18 @@ function PlayerBadge({ player, compact = false }: { player: PublicPlayer; compac
       <span className="gender-chip" style={genderStyle(player)} title={player.factionLabel}>{player.genderLabel}</span>
       <span className={`title-chip ${titleClass(player.stats.rankedPoints)}`}>{player.stats.title}</span>
       <strong>{displayPlayerName(player)}</strong>
+      <GiveawayChip player={player} />
     </span>
   );
+}
+
+function shouldShowGiveawayValue(player: PublicPlayer) {
+  return Boolean(player.giveawayEnabled || (player.giveawayValue || 0) > 0);
+}
+
+function GiveawayChip({ player }: { player: PublicPlayer }) {
+  if (!shouldShowGiveawayValue(player)) return null;
+  return <span className="giveaway-chip">白给 {formatGiveawayValue(player.giveawayValue || 0)}%</span>;
 }
 
 function displayPlayerName(player: PublicPlayer) {
@@ -907,15 +918,6 @@ function Room({ config, room, me, onBack, onError }: { config: AppConfig; room: 
     }
   }
 
-  async function boostGiveaway() {
-    try {
-      await ask("giveaway:boost", {});
-      onError(`白给值 +2%，当前约 ${formatGiveawayValue((me.giveawayValue || 0) + 2)}%`);
-    } catch (error) {
-      onError(error instanceof Error ? error.message : "白给失败");
-    }
-  }
-
   async function submitProof() {
     try {
       await ask("punishment:submit", { text: proofText, imageUrl: proofImage });
@@ -1016,7 +1018,7 @@ function Room({ config, room, me, onBack, onError }: { config: AppConfig; room: 
                 <button disabled={!canChoose || Boolean(myChoice)} onClick={() => choose("rock")}>✊<span>锤子</span></button>
                 <button disabled={!canChoose || Boolean(myChoice)} onClick={() => choose("scissors")}>✌️<span>剪刀</span></button>
                 <button disabled={!canChoose || Boolean(myChoice)} onClick={() => choose("paper")}>🖐️<span>布</span></button>
-                {canShowGiveawayButton && <button className="giveaway-move-button" disabled={room.phase === "punishment"} onClick={boostGiveaway}>🫴<span>白给</span></button>}
+                {canShowGiveawayButton && <button className="giveaway-move-button" disabled={!canChoose || Boolean(myChoice)} onClick={() => choose("giveaway")}>🫴<span>白给</span></button>}
               </div>
             </div>
           )}
@@ -1324,6 +1326,7 @@ function ChatName({ player }: { player: PublicPlayer }) {
     return (
       <span className="chat-name name-war-chat-name">
         <b>{player.nameWarPenaltyName}</b>
+        <GiveawayChip player={player} />
         {!player.connected && <span className="chat-offline">离线</span>}
       </span>
     );
@@ -1333,6 +1336,7 @@ function ChatName({ player }: { player: PublicPlayer }) {
       <span className="chat-gender" style={genderStyle(player)}>{player.genderLabel}</span>
       <span className="chat-title">{player.stats.title}</span>
       <b>{displayPlayerName(player)}</b>
+      <GiveawayChip player={player} />
       {!player.connected && <span className="chat-offline">离线</span>}
     </span>
   );
@@ -1384,10 +1388,14 @@ function SeatStatsView({ stats }: { stats: RoomSnapshot["seatStats"]["A"] }) {
 
 function choiceText(choice: Move | "hidden") {
   if (choice === "hidden") return "🔒 已出拳";
+  if (choice === "noMove") return "⏳ 未出拳";
+  if (choice === "forfeit") return "📴 断线判负";
+  if (choice === "giveaway") return "🫴 白给";
   return choice === "rock" ? "✊ 锤子" : choice === "scissors" ? "✌️ 剪刀" : "🖐️ 布";
 }
 
-function historyResultText(result: "A" | "B" | "draw") {
+function historyResultText(result: RoundResult) {
+  if (result === "doubleLoss") return "双输";
   if (result === "draw") return "平局";
   return `${result} 胜`;
 }
@@ -1569,7 +1577,8 @@ function GiveawayPanel({ config, players, me, onError }: { config: AppConfig; pl
   const activeBoards = players
     .filter((player) => player.giveawayBoardText && player.giveawayBoardExpiresAt && player.giveawayBoardExpiresAt > now)
     .sort((a, b) => (b.giveawayBoardSubmittedAt || 0) - (a.giveawayBoardSubmittedAt || 0));
-  const canSubmit = Boolean(me.giveawayEnabled && (me.giveawayValue || 0) > 0);
+  const myActiveBoard = activeBoards.find((player) => player.id === me.id);
+  const canSubmit = Boolean(me.giveawayEnabled && (me.giveawayValue || 0) > 0 && !myActiveBoard);
 
   useEffect(() => {
     const hasExpiry = players.some((player) => player.giveawayBoardExpiresAt && player.giveawayBoardExpiresAt > Date.now());
@@ -1610,6 +1619,7 @@ function GiveawayPanel({ config, players, me, onError }: { config: AppConfig; pl
           <button className="primary small" onClick={submitBoard}>上板 12 小时</button>
         </div>
       )}
+      {myActiveBoard && <p className="hint">你已经上板，过期后才能重新提交。当前剩余 {formatDuration((myActiveBoard.giveawayBoardExpiresAt || now) - now)}。</p>}
       {!canSubmit && me.giveawayEnabled && <p className="hint">你的白给值已经是 {formatGiveawayValue(me.giveawayValue || 0)}%，归零后可以在个人设置关闭模式。</p>}
       <div className="giveaway-board-list">
         {activeBoards.map((player) => {
@@ -1619,7 +1629,7 @@ function GiveawayPanel({ config, players, me, onError }: { config: AppConfig; pl
             <article className="giveaway-card" key={player.id}>
               <div className="giveaway-card-head">
                 <PlayerBadge player={player} />
-                <em>{formatGiveawayValue(player.giveawayValue || 0)}%</em>
+                <em>白给 {formatGiveawayValue(player.giveawayValue || 0)}%</em>
               </div>
               <p>{player.giveawayBoardText}</p>
               <small>剩余 {expiresText} · 👍 {player.giveawayBoardLikes || 0} · 👎 {player.giveawayBoardDislikes || 0}</small>

@@ -9,7 +9,8 @@ export type GenderFaction = GenderColors & {
   label: string;
   genders: GenderOption[];
 };
-export type Move = "rock" | "scissors" | "paper";
+export type Move = "rock" | "scissors" | "paper" | "giveaway" | "forfeit" | "noMove";
+export type RoundResult = "A" | "B" | "draw" | "doubleLoss";
 export type GamePhase = "waiting" | "ready" | "choosing" | "result" | "punishment";
 export type SeatKey = "A" | "B";
 export type BotDifficulty = "easy" | "normal" | "chaos";
@@ -164,7 +165,7 @@ export type RoundHistoryItem = {
   playerB: string;
   moveA: Move;
   moveB: Move;
-  result: "A" | "B" | "draw";
+  result: RoundResult;
   resultLabel: string;
   resultText: string;
   ranked: boolean;
