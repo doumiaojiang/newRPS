@@ -295,7 +295,7 @@ export function App() {
         setView(isAdminRoute() ? "admin" : next.room ? "room" : "lobby");
         if (next.room?.phase === "punishment") setNotice("已恢复到未完成的惩罚房间。");
       }} onError={setNotice} />}
-      {view === "lobby" && me && lobby && <Lobby config={config} lobby={lobby} me={me.player} onError={setNotice} onGoRoom={() => setView("room")} />}
+      {view === "lobby" && me && lobby && <Lobby config={config} lobby={lobby} me={me.player} onError={setNotice} onGoRoom={(nextRoom) => { if (nextRoom) setRoom(nextRoom); setView("room"); }} />}
       {view === "room" && me && room && <Room config={config} room={room} me={me.player} onBack={() => setView("lobby")} onError={setNotice} />}
       {view === "admin" && lobby && <AdminPanel config={config} lobby={lobby} onBack={() => { if (window.location.hash === "#admin") window.location.hash = ""; setView(me ? "lobby" : "login"); }} onError={setNotice} />}
       {view === "room" && !room && <section className="panel">你暂时不在房间里。</section>}
@@ -417,7 +417,7 @@ function titleClass(points: number) {
   return "title-high";
 }
 
-function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lobby: LobbySnapshot; me: PublicPlayer; onError: (message: string) => void; onGoRoom: () => void }) {
+function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lobby: LobbySnapshot; me: PublicPlayer; onError: (message: string) => void; onGoRoom: (room?: RoomSnapshot) => void }) {
   const [showCreate, setShowCreate] = useState(false);
   const [passwords, setPasswords] = useState<Record<string, string>>({});
   const [suggestion, setSuggestion] = useState("");
@@ -433,8 +433,8 @@ function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lo
 
   async function joinRoom(roomId: string) {
     try {
-      await ask("room:join", { roomId, password: passwords[roomId] });
-      onGoRoom();
+      const result = await ask<{ room: RoomSnapshot }>("room:join", { roomId, password: passwords[roomId] });
+      onGoRoom(result.room);
     } catch (error) {
       onError(error instanceof Error ? error.message : "加入失败");
     }
@@ -516,7 +516,7 @@ function suggestionToMessage(item: LobbySnapshot["suggestions"][number]): ChatMe
   };
 }
 
-function CreateRoom({ config, onCreated, onCancel, onError }: { config: AppConfig; onCreated: () => void; onCancel: () => void; onError: (message: string) => void }) {
+function CreateRoom({ config, onCreated, onCancel, onError }: { config: AppConfig; onCreated: (room?: RoomSnapshot) => void; onCancel: () => void; onError: (message: string) => void }) {
   const [settings, setSettings] = useState<RoomSettings>({
     name: defaultRoomName,
     gameId: "rps",
@@ -606,8 +606,8 @@ function CreateRoom({ config, onCreated, onCancel, onError }: { config: AppConfi
 
   async function create() {
     try {
-      await ask("room:create", { settings });
-      onCreated();
+      const result = await ask<{ room: RoomSnapshot }>("room:create", { settings });
+      onCreated(result.room);
     } catch (error) {
       onError(error instanceof Error ? error.message : "创建失败");
     }
