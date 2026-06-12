@@ -2346,6 +2346,43 @@ main {
   line-height: 1.4;
 }
 
+.multiplier-box {
+  display: grid;
+  gap: 8px;
+  border: 1px solid color-mix(in srgb, var(--primary) 42%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--primary) 9%, var(--panel-solid));
+  padding: 10px;
+}
+
+.multiplier-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  color: var(--page-text);
+}
+
+.multiplier-head span,
+.rank-multiplier-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  border: 1px solid color-mix(in srgb, var(--primary) 55%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 18%, var(--panel-solid));
+  color: var(--page-text);
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.multiplier-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .bot-difficulty-card {
   min-height: 128px;
   display: grid;

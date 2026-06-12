@@ -105,7 +105,8 @@ function playerSyncKey(player: PublicPlayer) {
     player.giveawayVoteWindowStartedAt || 0,
     player.giveawayVoteCount || 0,
     player.giveawayVoteLikesThisHour || 0,
-    player.giveawayVoteDislikesThisHour || 0
+    player.giveawayVoteDislikesThisHour || 0,
+    player.rankMultiplierUnlocked ? "1" : "0"
   ].join("|");
 }
 
@@ -435,6 +436,13 @@ function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lo
 
   async function joinRoom(roomId: string) {
     try {
+      const targetRoom = lobby.rooms.find((room) => room.id === roomId);
+      if (targetRoom?.enableRanked && (targetRoom.rankMultiplier || 1) > 1) {
+        const multiplier = targetRoom.rankMultiplier || 1;
+        const effectiveStake = targetRoom.stake * multiplier;
+        const ok = window.confirm(`这是 ${multiplier} 倍排位房，本局胜负按 ${effectiveStake} 分结算，确认进入？`);
+        if (!ok) return;
+      }
       const result = await ask<{ room: RoomSnapshot }>("room:join", { roomId, password: passwords[roomId] });
       onGoRoom(result.room);
     } catch (error) {
@@ -469,7 +477,7 @@ function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lo
               style={room.roomBackgroundImage ? { "--room-card-bg": `url(${room.roomBackgroundImage})` } as CSSProperties : undefined}
             >
               <div>
-                <h3>{room.name}</h3>
+                <h3>{room.name} <RankMultiplierBadge multiplier={room.rankMultiplier} /></h3>
                 {room.tags?.length ? <RoomTagList tags={room.tags} /> : null}
                 <RoomVersusLine room={room} />
                 <p>{room.status} · {room.players}/2 战斗席 · {room.spectators} 观战</p>
@@ -502,7 +510,7 @@ function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lo
           </div>
         </div>
       </aside>
-      {showCreate && <CreateRoom config={config} onCreated={onGoRoom} onCancel={() => setShowCreate(false)} onError={onError} />}
+      {showCreate && <CreateRoom config={config} me={me} onCreated={onGoRoom} onCancel={() => setShowCreate(false)} onError={onError} />}
     </section>
   );
 }
@@ -518,7 +526,7 @@ function suggestionToMessage(item: LobbySnapshot["suggestions"][number]): ChatMe
   };
 }
 
-function CreateRoom({ config, onCreated, onCancel, onError }: { config: AppConfig; onCreated: (room?: RoomSnapshot) => void; onCancel: () => void; onError: (message: string) => void }) {
+function CreateRoom({ config, me, onCreated, onCancel, onError }: { config: AppConfig; me: PublicPlayer; onCreated: (room?: RoomSnapshot) => void; onCancel: () => void; onError: (message: string) => void }) {
   const [settings, setSettings] = useState<RoomSettings>({
     name: defaultRoomName,
     gameId: "rps",
@@ -534,7 +542,9 @@ function CreateRoom({ config, onCreated, onCancel, onError }: { config: AppConfi
     tieDoublePunish: false,
     requireOpponentConfirm: false,
     enableRanked: false,
-    stake: 5
+    stake: 5,
+    enableRankMultiplier: false,
+    rankMultiplier: 1
   });
   const [customRoomName, setCustomRoomName] = useState(false);
 
@@ -570,9 +580,23 @@ function CreateRoom({ config, onCreated, onCancel, onError }: { config: AppConfi
       }
       if (next.enableBot) {
         merged.enableRanked = false;
+        merged.enableRankMultiplier = false;
+        merged.rankMultiplier = 1;
       }
       if (next.enableRanked) {
         merged.enableBot = false;
+      }
+      if (next.enableRanked === false) {
+        merged.enableRankMultiplier = false;
+        merged.rankMultiplier = 1;
+      }
+      if (next.enableRankMultiplier) {
+        merged.enableRanked = true;
+        merged.enableBot = false;
+        if (!([2, 5, 10] as const).includes(merged.rankMultiplier as 2 | 5 | 10)) merged.rankMultiplier = 2;
+      }
+      if (!merged.enableRankMultiplier) {
+        merged.rankMultiplier = 1;
       }
       if (next.enableBot && merged.punishmentSource === "player") {
         merged.punishmentSource = "system";
@@ -612,6 +636,15 @@ function CreateRoom({ config, onCreated, onCancel, onError }: { config: AppConfi
       onCreated(result.room);
     } catch (error) {
       onError(error instanceof Error ? error.message : "创建失败");
+    }
+  }
+
+  async function unlockMultiplierMode() {
+    try {
+      await ask("rankMultiplier:unlock", {});
+      onError("倍率模式已解锁，已扣除 200 排位积分。");
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "解锁失败");
     }
   }
 
@@ -680,6 +713,38 @@ function CreateRoom({ config, onCreated, onCancel, onError }: { config: AppConfi
               ))}
             </div>
             {settings.enableBot && <p className="hint">开启 Bot 时不能选择排位战。</p>}
+            {settings.enableRanked && (
+              <div className="multiplier-box">
+                <div className="multiplier-head">
+                  <strong>倍率模式</strong>
+                  <span>{settings.enableRankMultiplier ? `x${settings.rankMultiplier || 1}` : "未开启"}</span>
+                </div>
+                {!me.rankMultiplierUnlocked ? (
+                  <>
+                    <p className="hint">提交 200 排位积分后，本次服务器运行期间可创建 2倍 / 5倍 / 10倍排位房。</p>
+                    <button type="button" className="soft-button" disabled={me.stats.rankedPoints < 200} onClick={unlockMultiplierMode}>提交 200 积分解锁</button>
+                    {me.stats.rankedPoints < 200 && <p className="hint danger-hint">你的排位积分不足 200，暂时不能解锁。</p>}
+                  </>
+                ) : (
+                  <>
+                    <div className="multiplier-choice-grid">
+                      {([1, 2, 5, 10] as const).map((multiplier) => (
+                        <button
+                          type="button"
+                          className={`ranked-choice-card ${rankMultiplierForSettings(settings) === multiplier ? "active" : ""}`}
+                          key={multiplier}
+                          onClick={() => patch({ enableRankMultiplier: multiplier > 1, rankMultiplier: multiplier })}
+                        >
+                          <span>{multiplier === 1 ? "普通倍率" : `x${multiplier} 倍房`}</span>
+                          <small>{multiplier === 1 ? "按基础赌分结算。" : `胜负按 ${settings.stake * multiplier} 分结算。`}</small>
+                        </button>
+                      ))}
+                    </div>
+                    <p className="hint">当前：排位 {settings.stake} 分 × {rankMultiplierForSettings(settings)} 倍 = 胜负 {settings.stake * rankMultiplierForSettings(settings)} 分。</p>
+                  </>
+                )}
+              </div>
+            )}
           </div>
           <div className="create-section">
             <h3>惩罚</h3>
@@ -774,6 +839,16 @@ function primaryPunishmentForSettings(config: AppConfig, settings: RoomSettings)
 
 function sameStringArray(left: string[], right: string[]) {
   return left.length === right.length && left.every((item, index) => item === right[index]);
+}
+
+function rankMultiplierForSettings(settings: Pick<RoomSettings, "enableRanked" | "enableRankMultiplier" | "rankMultiplier">) {
+  if (!settings.enableRanked || !settings.enableRankMultiplier) return 1;
+  return ([2, 5, 10] as const).includes(settings.rankMultiplier as 2 | 5 | 10) ? settings.rankMultiplier || 1 : 1;
+}
+
+function RankMultiplierBadge({ multiplier }: { multiplier?: number }) {
+  if (!multiplier || multiplier <= 1) return null;
+  return <span className="rank-multiplier-badge">x{multiplier}</span>;
 }
 
 function preventEnterSubmit(event: ReactKeyboardEvent<HTMLInputElement>) {
@@ -996,7 +1071,7 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
         style={room.settings.roomBackgroundImage ? { "--room-header-bg": `url(${room.settings.roomBackgroundImage})` } as CSSProperties : undefined}
       >
         <div>
-          <h2><Swords size={20} /> {room.settings.name}</h2>
+          <h2><Swords size={20} /> {room.settings.name} <RankMultiplierBadge multiplier={rankMultiplierForSettings(room.settings)} /></h2>
           {room.settings.enableTags && room.settings.tags?.length ? <RoomTagList tags={room.settings.tags} /> : null}
           <RoomInfoTagList tags={roomInfoTags(config, room)} />
         </div>
@@ -1185,7 +1260,7 @@ function RoundHistoryCard({ item, onOpenImage }: { item: RoomSnapshot["roundHist
           <small>{new Date(item.at).toLocaleTimeString()}</small>
         </div>
         <div className="history-tags">
-          {item.ranked && <em>🏆 {item.stake}分</em>}
+          {item.ranked && <em>🏆 {item.stake}分{item.rankMultiplier && item.rankMultiplier > 1 ? ` ×${item.rankMultiplier}` : ""}</em>}
           {item.punishedNames.length > 0 && <em>🎲 惩罚</em>}
         </div>
       </header>
@@ -1435,6 +1510,8 @@ function roomInfoTags(config: AppConfig, room: RoomSnapshot) {
     room.settings.enableRanked ? roomInfoTag(config, "ranked", ` ${room.settings.stake} 分`) : roomInfoTag(config, "normal"),
     punishmentInfoTag(config, room)
   ];
+  const multiplier = rankMultiplierForSettings(room.settings);
+  if (multiplier > 1) tags.push(roomInfoTag(config, "ranked", ` 倍率 x${multiplier}`));
   if (room.settings.enablePunishment) {
     if (room.settings.tieDoublePunish) tags.push(roomInfoTag(config, "tieDoublePunish"));
     if (room.settings.requireOpponentConfirm) tags.push(roomInfoTag(config, "requireOpponentConfirm"));
@@ -1448,6 +1525,7 @@ function lobbyRoomInfoTags(config: AppConfig, room: LobbySnapshot["rooms"][numbe
     room.enableRanked ? roomInfoTag(config, "ranked") : roomInfoTag(config, "normal"),
     room.enablePunishment ? roomInfoTag(config, "punishment", punishmentSelectionText(config, room)) : roomInfoTag(config, "noPunishment")
   ];
+  if (room.enableRanked && (room.rankMultiplier || 1) > 1) tags.push(roomInfoTag(config, "ranked", ` 倍率 x${room.rankMultiplier}`));
   if (room.enablePunishment) {
     if (room.tieDoublePunish) tags.push(roomInfoTag(config, "tieDoublePunish"));
     if (room.requireOpponentConfirm) tags.push(roomInfoTag(config, "requireOpponentConfirm"));

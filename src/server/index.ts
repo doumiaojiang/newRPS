@@ -13,6 +13,7 @@ import type {
   ChatMessage,
   Move,
   PublicPlayer,
+  RankMultiplier,
   RoundResult,
   RoundHistoryItem,
   RoomSettings,
@@ -41,7 +42,9 @@ type DisconnectForfeit = {
   winnerId: string;
   winnerSeat: SeatKey;
   winnerName: string;
-  stake: 5 | 10 | 20;
+  stake: number;
+  baseStake: 5 | 10 | 20;
+  rankMultiplier: RankMultiplier;
 };
 
 type RoomState = Omit<RoomSnapshot, "spectators" | "seats" | "roundHistoryTotal"> & {
@@ -478,7 +481,7 @@ function emptySeatStats(): SeatStats {
 function roundResultLabel(room: RoomState, result: RoundResult) {
   if (result === "doubleLoss") return "双方白给，双输";
   if (result === "draw") {
-    if (room.settings.enableRanked && room.settings.tieDoublePunish) return `平局双扣 -${room.settings.stake}`;
+    if (room.settings.enableRanked && room.settings.tieDoublePunish) return `平局双扣 -${effectiveRankedStake(room.settings)}`;
     return "平局";
   }
   return `${occupantName(room.seats[result])}胜利`;
@@ -548,6 +551,9 @@ function lobbySnapshot(options: { includeConfig?: boolean } = {}) {
       tieDoublePunish: room.settings.tieDoublePunish,
       requireOpponentConfirm: room.settings.requireOpponentConfirm,
       enableRanked: room.settings.enableRanked,
+      stake: room.settings.stake,
+      enableRankMultiplier: room.settings.enableRankMultiplier,
+      rankMultiplier: rankMultiplierFor(room.settings),
       tags: room.settings.enableTags ? room.settings.tags || [] : []
     })),
     normalLeaderboard,
@@ -693,6 +699,7 @@ function createPlayer(name: string, genderId: string, token?: string): PlayerSta
     giveawayBoardDislikes: 0,
     giveawayVoteLikesThisHour: 0,
     giveawayVoteDislikesThisHour: 0,
+    rankMultiplierUnlocked: false,
     token: token || randomId(),
     stats: { wins: 0, losses: 0, draws: 0, punishments: 0, rankedPoints: 0, title, titleSegmentId: titleSegment?.id },
     recentMoves: []
@@ -712,6 +719,27 @@ function applyRankedDrawPenalty(playerA: PlayerState | undefined, playerB: Playe
   if (playerB) updateRankedPoints(playerB, -stake);
 }
 
+function rankMultiplierFor(settings: RoomSettings): RankMultiplier {
+  if (!settings.enableRanked || !settings.enableRankMultiplier) return 1;
+  return ([2, 5, 10] as RankMultiplier[]).includes(settings.rankMultiplier as RankMultiplier)
+    ? settings.rankMultiplier as RankMultiplier
+    : 1;
+}
+
+function effectiveRankedStake(settings: RoomSettings) {
+  return settings.stake * rankMultiplierFor(settings);
+}
+
+function applyRankedStake(winner: PlayerState | undefined, loser: PlayerState | undefined, stake: number) {
+  if (winner) updateRankedPoints(winner, stake);
+  if (loser) updateRankedPoints(loser, -stake);
+}
+
+function applyRankedDrawPenaltyStake(playerA: PlayerState | undefined, playerB: PlayerState | undefined, stake: number) {
+  if (playerA) updateRankedPoints(playerA, -stake);
+  if (playerB) updateRankedPoints(playerB, -stake);
+}
+
 function createDisconnectForfeit(room: RoomState, player: PlayerState) {
   if (!room.settings.enableRanked || room.phase !== "choosing") return;
   const loserSeat = seatOf(room, player.id);
@@ -726,7 +754,9 @@ function createDisconnectForfeit(room: RoomState, player: PlayerState) {
     winnerId: winner.id,
     winnerSeat,
     winnerName: occupantName(winner),
-    stake: room.settings.stake
+    stake: effectiveRankedStake(room.settings),
+    baseStake: room.settings.stake,
+    rankMultiplier: rankMultiplierFor(room.settings)
   });
 }
 
@@ -757,7 +787,8 @@ function applyDisconnectForfeit(room: RoomState, player: PlayerState) {
   room.phase = "result";
   room.status = "playing";
   room.revealedChoices = undefined;
-  room.resultText = `${forfeit.loserName} 断线超时判负，${forfeit.winnerName}胜利，排位 ${forfeit.stake} 分已结算`;
+  const stakeText = forfeit.rankMultiplier > 1 ? `${forfeit.baseStake} 分 ×${forfeit.rankMultiplier} = ${forfeit.stake} 分` : `${forfeit.stake} 分`;
+  room.resultText = `${forfeit.loserName} 断线超时判负，${forfeit.winnerName}胜利，排位 ${stakeText} 已结算`;
   addRoundHistory(room, {
     id: randomId(),
     round: room.roundHistory.length + 1,
@@ -770,7 +801,9 @@ function applyDisconnectForfeit(room: RoomState, player: PlayerState) {
     resultLabel: `${forfeit.winnerName}胜利`,
     resultText: room.resultText,
     ranked: true,
-    stake: forfeit.stake,
+    stake: forfeit.baseStake,
+    rankMultiplier: forfeit.rankMultiplier,
+    effectiveStake: forfeit.stake,
     punishmentTasks: [],
     punishedNames: [],
     proofs: []
@@ -964,6 +997,8 @@ function finishRoundIfReady(room: RoomState) {
 
   const playerA = room.seats.A && !("isBot" in room.seats.A) ? players.get(room.seats.A.id) : undefined;
   const playerB = room.seats.B && !("isBot" in room.seats.B) ? players.get(room.seats.B.id) : undefined;
+  const rankedMultiplier = rankMultiplierFor(room.settings);
+  const rankedStake = effectiveRankedStake(room.settings);
   if (playerA && isRpsMove(choiceA)) playerA.recentMoves.push(choiceA);
   if (playerB && isRpsMove(choiceB)) playerB.recentMoves.push(choiceB);
   for (const seat of giveawaySeats) {
@@ -982,9 +1017,9 @@ function finishRoundIfReady(room: RoomState) {
     if (playerB) playerB.stats.losses += 1;
     room.seatStats.A.losses += 1;
     room.seatStats.B.losses += 1;
-    if (room.settings.enableRanked) applyRankedDrawPenalty(playerA, playerB, room.settings.stake);
+    if (room.settings.enableRanked) applyRankedDrawPenaltyStake(playerA, playerB, rankedStake);
     room.resultText = room.settings.enableRanked
-      ? `双方白给，双输：双方各扣 ${room.settings.stake} 分`
+      ? `双方白给，双输：双方各扣 ${rankedStake} 分`
       : "双方白给，双输";
   } else if (result === "draw") {
     if (playerA) playerA.stats.draws += 1;
@@ -992,8 +1027,8 @@ function finishRoundIfReady(room: RoomState) {
     room.seatStats.A.draws += 1;
     room.seatStats.B.draws += 1;
     if (room.settings.enableRanked && room.settings.tieDoublePunish) {
-      applyRankedDrawPenalty(playerA, playerB, room.settings.stake);
-      room.resultText = `平局双罚：双方都出了 ${moveText(finalChoices.A)}，双方各扣 ${room.settings.stake} 分`;
+      applyRankedDrawPenaltyStake(playerA, playerB, rankedStake);
+      room.resultText = `平局双罚：双方都出了 ${moveText(finalChoices.A)}，双方各扣 ${rankedStake} 分`;
     } else {
       room.resultText = `平局：双方都出了 ${moveText(finalChoices.A)}`;
     }
@@ -1009,7 +1044,7 @@ function finishRoundIfReady(room: RoomState) {
     room.seatedScore[winnerSeat] += 1;
     room.seatStats[winnerSeat].wins += 1;
     room.seatStats[loserSeat].losses += 1;
-    if (room.settings.enableRanked) applyRanked(winner, loser, room.settings.stake);
+    if (room.settings.enableRanked) applyRankedStake(winner, loser, rankedStake);
     room.resultText = giveawayText
       ? `${giveawayText}，${occupantName(room.seats[winnerSeat])}胜利`
       : `${winnerSeat} 获胜：A 出 ${moveText(finalChoices.A)}，B 出 ${moveText(finalChoices.B)}`;
@@ -1028,6 +1063,8 @@ function finishRoundIfReady(room: RoomState) {
     resultText: room.resultText ?? "",
     ranked: room.settings.enableRanked,
     stake: room.settings.enableRanked ? room.settings.stake : undefined,
+    rankMultiplier: room.settings.enableRanked ? rankedMultiplier : undefined,
+    effectiveStake: room.settings.enableRanked ? rankedStake : undefined,
     punishmentName: punishedNames.length ? punishmentNameForRoom(room, punishment) : undefined,
     punishmentDescription: punishedNames.length && room.settings.punishmentSource !== "player" ? punishment?.description : undefined,
     punishmentTasks,
@@ -1664,6 +1701,19 @@ io.on("connection", (socket) => {
     if (actor.roomId && actor.roomId !== target.roomId) broadcastRoom(actor.roomId);
   });
 
+  socket.on("rankMultiplier:unlock", (_payload, reply) => {
+    const player = getPlayer(socket.id);
+    if (!player) return reply?.({ error: "请先进入游戏" });
+    if (player.rankMultiplierUnlocked) return reply?.({ player: publicPlayer(player) });
+    if (player.stats.rankedPoints < 200) return reply?.({ error: "需要至少 200 排位积分才能解锁倍率模式" });
+    updateRankedPoints(player, -200);
+    player.rankMultiplierUnlocked = true;
+    refreshPlayerSnapshots(player);
+    reply?.({ player: publicPlayer(player) });
+    broadcastLobby();
+    if (player.roomId) broadcastRoom(player.roomId);
+  });
+
   socket.on("nameWar:renameTarget", ({ targetId, name }: { targetId: string; name: string }, reply) => {
     const actor = getPlayer(socket.id);
     const target = players.get(targetId);
@@ -1725,8 +1775,16 @@ io.on("connection", (socket) => {
       gameId: "rps",
       stake: settings.stake || 5,
       allowProofImage: settings.allowProofImage !== false,
-      punishmentSource: settings.punishmentSource || "system"
+      punishmentSource: settings.punishmentSource || "system",
+      enableRankMultiplier: Boolean(settings.enableRanked && settings.enableRankMultiplier),
+      rankMultiplier: settings.enableRankMultiplier && ([2, 5, 10] as RankMultiplier[]).includes(settings.rankMultiplier as RankMultiplier)
+        ? settings.rankMultiplier as RankMultiplier
+        : 1
     };
+    if (!normalizedSettings.enableRanked) {
+      normalizedSettings.enableRankMultiplier = false;
+      normalizedSettings.rankMultiplier = 1;
+    }
     if (normalizedSettings.enablePunishment && normalizedSettings.punishmentSource !== "player") {
       normalizedSettings.punishmentIds = selectedPunishmentIds(normalizedSettings);
       normalizedSettings.punishmentId = normalizedSettings.punishmentIds[normalizedSettings.punishmentIds.length - 1];
@@ -1741,6 +1799,9 @@ io.on("connection", (socket) => {
     normalizedSettings.roomBackgroundImage = randomRoomBackground(normalizedSettings);
     if (normalizedSettings.enableRanked && normalizedSettings.enableBot) {
       return reply?.({ error: "排位战不能开启 Bot" });
+    }
+    if (normalizedSettings.enableRankMultiplier && !player.rankMultiplierUnlocked) {
+      return reply?.({ error: "请先提交 200 排位积分解锁倍率模式" });
     }
     if (normalizedSettings.enablePunishment && normalizedSettings.punishmentSource === "player" && normalizedSettings.enableBot) {
       return reply?.({ error: "玩家发布任务模式不能开启 Bot" });

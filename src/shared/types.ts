@@ -13,6 +13,7 @@ export type Move = "rock" | "scissors" | "paper" | "giveaway" | "forfeit" | "noM
 export type RoundResult = "A" | "B" | "draw" | "doubleLoss";
 export type GamePhase = "waiting" | "ready" | "choosing" | "result" | "punishment";
 export type SeatKey = "A" | "B";
+export type RankMultiplier = 1 | 2 | 5 | 10;
 export type BotDifficulty = "easy" | "normal" | "chaos";
 export type BotStrategy = "random" | "counter" | "chaos" | "throw" | "win";
 
@@ -81,6 +82,7 @@ export type PublicPlayer = {
   giveawayVoteCount?: number;
   giveawayVoteLikesThisHour?: number;
   giveawayVoteDislikesThisHour?: number;
+  rankMultiplierUnlocked?: boolean;
   roomId?: string;
   isAdmin?: boolean;
   stats: PublicStats;
@@ -136,6 +138,8 @@ export type RoomSettings = {
   requireOpponentConfirm: boolean;
   enableRanked: boolean;
   stake: 5 | 10 | 20;
+  enableRankMultiplier?: boolean;
+  rankMultiplier?: RankMultiplier;
 };
 
 export type PunishmentProof = {
@@ -172,6 +176,8 @@ export type RoundHistoryItem = {
   resultText: string;
   ranked: boolean;
   stake?: 5 | 10 | 20;
+  rankMultiplier?: RankMultiplier;
+  effectiveStake?: number;
   punishmentName?: string;
   punishmentDescription?: string;
   punishmentTasks: Array<{
@@ -263,6 +269,9 @@ export type LobbySnapshot = {
     tieDoublePunish: boolean;
     requireOpponentConfirm: boolean;
     enableRanked: boolean;
+    stake: 5 | 10 | 20;
+    enableRankMultiplier?: boolean;
+    rankMultiplier?: RankMultiplier;
     tags?: string[];
   }>;
   normalLeaderboard: PublicPlayer[];
