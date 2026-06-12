@@ -661,22 +661,39 @@ main {
 
 .giveaway-card {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   border: 1px solid color-mix(in srgb, var(--primary) 42%, var(--border));
   border-radius: 8px;
   background: linear-gradient(135deg, color-mix(in srgb, var(--primary) 10%, var(--panel-solid)), color-mix(in srgb, var(--pink) 22%, var(--panel-solid)));
-  padding: 10px;
+  padding: 9px;
 }
 
 .giveaway-card p {
   margin: 0;
-  line-height: 1.45;
+  line-height: 1.38;
   white-space: pre-wrap;
 }
 
-.giveaway-card small {
+.giveaway-board-text {
+  color: var(--page-text);
+}
+
+.giveaway-card-meta,
+.giveaway-quota-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 8px;
   color: var(--muted);
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.giveaway-quota-line span {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-soft) 84%, transparent);
+  padding: 3px 7px;
 }
 
 .giveaway-card-head,
@@ -687,20 +704,10 @@ main {
   gap: 8px;
 }
 
-.giveaway-card-head em {
-  border: 1px solid var(--pink-border);
-  border-radius: 999px;
-  padding: 4px 8px;
-  background: color-mix(in srgb, var(--pink) 30%, var(--panel-solid));
-  color: var(--page-text);
-  font-style: normal;
-  font-weight: 900;
-}
-
 .giveaway-actions button {
   flex: 1;
-  min-height: 34px;
-  padding: 7px 8px;
+  min-height: 32px;
+  padding: 6px 8px;
 }
 
 .create-modal {
@@ -1197,9 +1204,35 @@ main {
   margin-bottom: 0;
 }
 
+.chat-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.chat-tabs {
+  width: min(180px, 48%);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.chat-tabs button {
+  min-height: 30px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
 .chat-panel .send-row {
   align-self: end;
   padding-top: 2px;
+}
+
+.chat-readonly-hint {
+  align-self: end;
+  margin: 0;
+  padding-top: 4px;
+  text-align: center;
 }
 
 .sticky-panel-title {

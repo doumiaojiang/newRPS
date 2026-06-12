@@ -79,6 +79,8 @@ export type PublicPlayer = {
   giveawayBoardLikesThisHour?: number;
   giveawayVoteWindowStartedAt?: number;
   giveawayVoteCount?: number;
+  giveawayVoteLikesThisHour?: number;
+  giveawayVoteDislikesThisHour?: number;
   roomId?: string;
   isAdmin?: boolean;
   stats: PublicStats;

@@ -103,7 +103,9 @@ function playerSyncKey(player: PublicPlayer) {
     player.giveawayBoardLikes || 0,
     player.giveawayBoardDislikes || 0,
     player.giveawayVoteWindowStartedAt || 0,
-    player.giveawayVoteCount || 0
+    player.giveawayVoteCount || 0,
+    player.giveawayVoteLikesThisHour || 0,
+    player.giveawayVoteDislikesThisHour || 0
   ].join("|");
 }
 
@@ -296,7 +298,7 @@ export function App() {
         if (next.room?.phase === "punishment") setNotice("已恢复到未完成的惩罚房间。");
       }} onError={setNotice} />}
       {view === "lobby" && me && lobby && <Lobby config={config} lobby={lobby} me={me.player} onError={setNotice} onGoRoom={(nextRoom) => { if (nextRoom) setRoom(nextRoom); setView("room"); }} />}
-      {view === "room" && me && room && <Room config={config} room={room} me={me.player} onBack={() => setView("lobby")} onError={setNotice} />}
+      {view === "room" && me && room && <Room config={config} room={room} lobbySuggestions={lobby?.suggestions || []} me={me.player} onBack={() => setView("lobby")} onError={setNotice} />}
       {view === "admin" && lobby && <AdminPanel config={config} lobby={lobby} onBack={() => { if (window.location.hash === "#admin") window.location.hash = ""; setView(me ? "lobby" : "login"); }} onError={setNotice} />}
       {view === "room" && !room && <section className="panel">你暂时不在房间里。</section>}
       {profileOpen && me && <ProfilePanel config={config} me={me.player} onClose={() => setProfileOpen(false)} onUpdated={(player) => { setMe({ ...me, player }); localStorage.setItem("rps-online-name", player.name); localStorage.setItem("rps-online-gender", player.genderId); }} onError={setNotice} />}
@@ -836,8 +838,9 @@ function botStrategyText(strategy?: AppConfig["bots"]["difficulties"][number]["s
   return "随机";
 }
 
-function Room({ config, room, me, onBack, onError }: { config: AppConfig; room: RoomSnapshot; me: PublicPlayer; onBack: () => void; onError: (message: string) => void }) {
+function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config: AppConfig; room: RoomSnapshot; lobbySuggestions: LobbySnapshot["suggestions"]; me: PublicPlayer; onBack: () => void; onError: (message: string) => void }) {
   const [chat, setChat] = useState("");
+  const [chatTab, setChatTab] = useState<"room" | "lobby">("room");
   const [proofText, setProofText] = useState("");
   const [proofImage, setProofImage] = useState("");
   const [localChoice, setLocalChoice] = useState<Move | null>(null);
@@ -859,6 +862,8 @@ function Room({ config, room, me, onBack, onError }: { config: AppConfig; room: 
   const punishedNames = punishedPlayerNames(room);
   const iAmPunished = room.punishedPlayerIds.includes(me.id);
   const visibleChatMessages = room.chat.filter((item) => !item.expiresAt || item.expiresAt > now).slice(-80);
+  const visibleLobbyMessages = lobbySuggestions.slice(0, 50).reverse().map(suggestionToMessage);
+  const displayedChatMessages = chatTab === "room" ? visibleChatMessages : visibleLobbyMessages;
   const visibleRoundHistory = [...room.roundHistory, ...extraHistory.filter((item) => !room.roundHistory.some((fresh) => fresh.id === item.id))];
   const leaveTitle = room.phase === "punishment"
     ? iAmPunished
@@ -886,7 +891,7 @@ function Room({ config, room, me, onBack, onError }: { config: AppConfig; room: 
   useEffect(() => {
     const list = chatListRef.current;
     if (list && chatStickToBottomRef.current) scrollToBottomSoon(list);
-  }, [visibleChatMessages.length]);
+  }, [displayedChatMessages.length, chatTab]);
 
   async function act(event: string, payload: unknown = {}) {
     try {
@@ -1125,14 +1130,23 @@ function Room({ config, room, me, onBack, onError }: { config: AppConfig; room: 
             </div>
           </div>
           <div className="panel chat-panel">
-            <h3>房间聊天</h3>
+            <div className="chat-panel-head">
+              <h3>{chatTab === "room" ? "房间聊天" : "大厅聊天室"}</h3>
+              <div className="segmented chat-tabs">
+                <button className={chatTab === "room" ? "active" : ""} onClick={() => setChatTab("room")}>本房间</button>
+                <button className={chatTab === "lobby" ? "active" : ""} onClick={() => setChatTab("lobby")}>大厅</button>
+              </div>
+            </div>
             <div className="messages room-chat-messages" ref={chatListRef} onScroll={(event) => { chatStickToBottomRef.current = isNearScrollBottom(event.currentTarget); }}>
-              {visibleChatMessages.map((item) => <ChatBubble key={item.id} message={item} me={me} />)}
+              {displayedChatMessages.map((item) => <ChatBubble key={item.id} message={item} me={me} />)}
+              {displayedChatMessages.length === 0 && <p className="empty">{chatTab === "room" ? "还没有房间聊天" : "大厅还没有留言"}</p>}
             </div>
-            <div className="send-row">
-              <input value={chat} onChange={(event) => setChat(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") sendChat(); }} placeholder="发一句话..." />
-              <button onClick={sendChat}>发送</button>
-            </div>
+            {chatTab === "room" ? (
+              <div className="send-row">
+                <input value={chat} onChange={(event) => setChat(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") sendChat(); }} placeholder="发一句话..." />
+                <button onClick={sendChat}>发送</button>
+              </div>
+            ) : <p className="hint chat-readonly-hint">大厅聊天室在房间内只能查看，回到大厅后可以发送。</p>}
           </div>
         </div>
         <div className="panel round-history">
@@ -1579,6 +1593,7 @@ function GiveawayPanel({ config, players, me, onError }: { config: AppConfig; pl
     .sort((a, b) => (b.giveawayBoardSubmittedAt || 0) - (a.giveawayBoardSubmittedAt || 0));
   const myActiveBoard = activeBoards.find((player) => player.id === me.id);
   const canSubmit = Boolean(me.giveawayEnabled && (me.giveawayValue || 0) > 0 && !myActiveBoard);
+  const voteQuota = giveawayVoteQuota(me, now);
 
   useEffect(() => {
     const hasExpiry = players.some((player) => player.giveawayBoardExpiresAt && player.giveawayBoardExpiresAt > Date.now());
@@ -1629,13 +1644,19 @@ function GiveawayPanel({ config, players, me, onError }: { config: AppConfig; pl
             <article className="giveaway-card" key={player.id}>
               <div className="giveaway-card-head">
                 <PlayerBadge player={player} />
-                <em>白给 {formatGiveawayValue(player.giveawayValue || 0)}%</em>
               </div>
-              <p>{player.giveawayBoardText}</p>
-              <small>剩余 {expiresText} · 👍 {player.giveawayBoardLikes || 0} · 👎 {player.giveawayBoardDislikes || 0}</small>
+              <p className="giveaway-board-text">{player.giveawayBoardText}</p>
+              <div className="giveaway-card-meta">
+                <span>剩余 {expiresText}</span>
+                <span>👍 {player.giveawayBoardLikes || 0} · 👎 {player.giveawayBoardDislikes || 0}</span>
+              </div>
+              <div className="giveaway-quota-line">
+                <span>我的额度：👍 还可 {voteQuota.likesLeft}/3 · 👎 还可 {voteQuota.dislikesLeft}/10</span>
+                <span>{voteQuota.refreshText}</span>
+              </div>
               <div className="giveaway-actions">
-                <button disabled={isSelf} onClick={() => vote(player.id, "like")}>👍 -1%</button>
-                <button disabled={isSelf} onClick={() => vote(player.id, "dislike")}>👎 +0.1%</button>
+                <button disabled={isSelf || voteQuota.likesLeft <= 0} onClick={() => vote(player.id, "like")}>👍 -1%</button>
+                <button disabled={isSelf || voteQuota.dislikesLeft <= 0} onClick={() => vote(player.id, "dislike")}>👎 +0.1%</button>
               </div>
             </article>
           );
@@ -1644,6 +1665,19 @@ function GiveawayPanel({ config, players, me, onError }: { config: AppConfig; pl
       </div>
     </div>
   );
+}
+
+function giveawayVoteQuota(player: PublicPlayer, now: number) {
+  const startedAt = player.giveawayVoteWindowStartedAt || 0;
+  const windowMs = 3_600_000;
+  const expired = !startedAt || now - startedAt >= windowMs;
+  const likesUsed = expired ? 0 : player.giveawayVoteLikesThisHour || 0;
+  const dislikesUsed = expired ? 0 : player.giveawayVoteDislikesThisHour || 0;
+  return {
+    likesLeft: Math.max(0, 3 - likesUsed),
+    dislikesLeft: Math.max(0, 10 - dislikesUsed),
+    refreshText: expired ? "额度可用" : `额度 ${formatDuration(startedAt + windowMs - now)}后刷新`
+  };
 }
 
 function formatGiveawayValue(value: number) {

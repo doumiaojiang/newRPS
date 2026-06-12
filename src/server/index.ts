@@ -691,6 +691,8 @@ function createPlayer(name: string, genderId: string, token?: string): PlayerSta
     giveawayClicks: 0,
     giveawayBoardLikes: 0,
     giveawayBoardDislikes: 0,
+    giveawayVoteLikesThisHour: 0,
+    giveawayVoteDislikesThisHour: 0,
     token: token || randomId(),
     stats: { wins: 0, losses: 0, draws: 0, punishments: 0, rankedPoints: 0, title, titleSegmentId: titleSegment?.id },
     recentMoves: []
@@ -1635,16 +1637,13 @@ io.on("connection", (socket) => {
     if (!actor.giveawayVoteWindowStartedAt || now - actor.giveawayVoteWindowStartedAt >= 3_600_000) {
       actor.giveawayVoteWindowStartedAt = now;
       actor.giveawayVoteCount = 0;
+      actor.giveawayVoteLikesThisHour = 0;
+      actor.giveawayVoteDislikesThisHour = 0;
     }
-    if ((actor.giveawayVoteCount || 0) >= 3) return reply?.({ error: "你本小时已经操作 3 次白给自救板" });
 
     if (vote === "like") {
-      if (!target.giveawayBoardLikeWindowStartedAt || now - target.giveawayBoardLikeWindowStartedAt >= 3_600_000) {
-        target.giveawayBoardLikeWindowStartedAt = now;
-        target.giveawayBoardLikesThisHour = 0;
-      }
-      if ((target.giveawayBoardLikesThisHour || 0) >= 3) return reply?.({ error: "这个玩家本小时点赞降值已满" });
-      target.giveawayBoardLikesThisHour = (target.giveawayBoardLikesThisHour || 0) + 1;
+      if ((actor.giveawayVoteLikesThisHour || 0) >= 3) return reply?.({ error: "你本小时点赞降值次数已满" });
+      actor.giveawayVoteLikesThisHour = (actor.giveawayVoteLikesThisHour || 0) + 1;
       target.giveawayBoardLikes = (target.giveawayBoardLikes || 0) + 1;
       addGiveawayValue(target, -1);
       if ((target.giveawayValue || 0) <= 0) {
@@ -1653,6 +1652,8 @@ io.on("connection", (socket) => {
         target.giveawayBoardExpiresAt = undefined;
       }
     } else {
+      if ((actor.giveawayVoteDislikesThisHour || 0) >= 10) return reply?.({ error: "你本小时倒赞加值次数已满" });
+      actor.giveawayVoteDislikesThisHour = (actor.giveawayVoteDislikesThisHour || 0) + 1;
       target.giveawayBoardDislikes = (target.giveawayBoardDislikes || 0) + 1;
       addGiveawayValue(target, 0.1);
     }
