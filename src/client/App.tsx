@@ -4,6 +4,23 @@ import { socket } from "./main";
 import type { AppConfig, BotDifficulty, ChatMessage, GenderFaction, LobbySnapshot, Move, PublicPlayer, PunishmentTaskConfig, RoomInfoTagStyle, RoomNamePool, RoomSettings, RoomSnapshot, RoundResult, SeatKey } from "../shared/types";
 
 const tokenKey = "rps-online-token";
+async function ensureSessionToken() {
+  const existing = localStorage.getItem(tokenKey);
+  if (existing && existing.split(".").length === 3) return existing;
+  if (existing) localStorage.removeItem(tokenKey);
+  const response = await fetch("/api/session", { method: "POST" });
+  const data = await response.json();
+  if (!response.ok || !data.token) throw new Error(data.message || "Session failed");
+  localStorage.setItem(tokenKey, data.token);
+  return String(data.token);
+}
+
+async function connectSocketWithSession() {
+  const token = await ensureSessionToken();
+  socket.auth = { token };
+  if (!socket.connected) socket.connect();
+  return token;
+}
 const defaultRoomName = "新的锤子剪刀布房间";
 const maxImageUploadBytes = 8 * 1024 * 1024;
 
@@ -139,6 +156,14 @@ export function App() {
   const [theme, setTheme] = useState<"light" | "dark">(() => (localStorage.getItem("rps-online-theme") === "dark" ? "dark" : "light"));
   const restoreInFlightRef = useRef(false);
 
+  useEffect(() => {
+    connectSocketWithSession().catch(() => {
+      localStorage.removeItem(tokenKey);
+      setConnectionState("disconnected");
+      setNotice("连接认证失败，请刷新后重试。");
+    });
+  }, []);
+
   async function restoreSession(options: { showRecoveredNotice?: boolean; clearBadToken?: boolean } = {}) {
     if (restoreInFlightRef.current) return;
     const token = localStorage.getItem(tokenKey);
@@ -213,6 +238,10 @@ export function App() {
       setConnectionState("disconnected");
       setNotice("连接已断开，正在重连。");
     });
+    socket.on("connect_error", () => {
+      localStorage.removeItem(tokenKey);
+      connectSocketWithSession().catch(() => setConnectionState("disconnected"));
+    });
     socket.io.on("reconnect_attempt", () => setConnectionState("connecting"));
     return () => {
       socket.off("lobby:update");
@@ -225,6 +254,7 @@ export function App() {
       socket.off("announcement:show");
       socket.off("connect");
       socket.off("disconnect");
+      socket.off("connect_error");
       socket.io.off("reconnect_attempt");
     };
   }, []);

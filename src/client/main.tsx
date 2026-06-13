@@ -5,6 +5,7 @@ import { App } from "./App";
 import "./styles.css";
 
 export const socket = io({
+  autoConnect: false,
   reconnection: true,
   reconnectionAttempts: Infinity,
   reconnectionDelay: 800,
