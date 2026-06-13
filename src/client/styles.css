@@ -1705,7 +1705,6 @@ main {
 }
 
 .history-card-head,
-.history-duel,
 .history-tags {
   display: flex;
   align-items: center;
@@ -1745,8 +1744,12 @@ main {
 }
 
 .history-duel {
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) auto minmax(130px, 1fr);
+  align-items: stretch;
+  gap: 8px;
   text-align: center;
+  min-width: 0;
 }
 
 .history-side {
@@ -1763,27 +1766,36 @@ main {
 .history-side span {
   color: var(--muted);
   font-size: 12px;
-  word-break: break-word;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  line-height: 1.35;
 }
 
 .history-side strong {
   font-size: 16px;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
 }
 
 .history-result {
   display: grid;
+  align-content: center;
+  justify-items: center;
   gap: 4px;
-  min-width: 82px;
+  min-width: 76px;
   color: var(--muted);
 }
 
 .history-result b {
   color: var(--page-text);
   border: 1px solid var(--pink-border);
-  border-radius: 999px;
+  border-radius: 8px;
   background: var(--notice-bg);
   padding: 3px 8px;
   font-size: 12px;
+  max-width: 150px;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
 }
 
 .history-section {
@@ -3685,6 +3697,26 @@ main {
 
   .round-history {
     height: 460px;
+  }
+
+  .history-duel {
+    grid-template-columns: 1fr;
+    text-align: left;
+  }
+
+  .history-side {
+    text-align: left;
+  }
+
+  .history-result {
+    min-width: 0;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    justify-items: start;
+  }
+
+  .history-result b {
+    max-width: 100%;
   }
 
   .designed-task-card {

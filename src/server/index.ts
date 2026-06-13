@@ -664,7 +664,20 @@ function roomNotice(room: RoomState, text: string) {
   });
 }
 
-function canAutoSeatOnJoin(room: RoomState) {
+function canUseBattleSeat(room: RoomState, player: PlayerState) {
+  if (!room.settings.enableRanked) return true;
+  return Boolean(player.extremeModeEnabled) === Boolean(room.settings.enableExtremeRanked);
+}
+
+function rankedSeatRestrictionText(room: RoomState, player: PlayerState) {
+  if (!room.settings.enableRanked || canUseBattleSeat(room, player)) return "";
+  return room.settings.enableExtremeRanked
+    ? "非极限模式玩家只能观战极限排位房"
+    : "极限模式玩家只能观战普通排位房";
+}
+
+function canAutoSeatOnJoin(room: RoomState, player: PlayerState) {
+  if (!canUseBattleSeat(room, player)) return false;
   if (room.phase === "punishment" || room.phase === "result") return false;
   if (room.phase === "choosing" && (room.choices.A || room.choices.B)) return false;
   return true;
@@ -911,10 +924,10 @@ function applyExtremeWinStreakRisk(room: RoomState, winner: PlayerState | undefi
   const threshold = config.extremeMode.winStreakThreshold;
   if (winner.extremeWinStreak < threshold) return "";
   if (Math.random() >= config.extremeMode.winStreakCrashChance) return "";
-  const target = config.extremeMode.crashTargetPoints;
-  setRankedPointsByAdmin(winner, target);
+  const penalty = Math.max(1, Math.round(config.extremeMode.crashTargetPoints));
+  updateRankedPoints(winner, -penalty);
   refreshPlayerSnapshots(winner);
-  return `；${playerShortName(winner)} 极限连胜触发风险，积分变为 ${winner.stats.rankedPoints}`;
+  return `；${playerShortName(winner)} 极限连胜触发风险，额外扣 ${penalty} 分`;
 }
 
 function nameWarRenameQuota(player: PlayerState, now = Date.now()) {
@@ -1989,21 +2002,15 @@ io.on("connection", (socket) => {
     const room = rooms.get(roomId);
     if (!player || !room) return reply?.({ error: "房间不存在" });
     if (room.settings.password && room.settings.password !== password) return reply?.({ error: config.messages.passwordWrong });
-    if (room.settings.enableRanked && player.extremeModeEnabled !== Boolean(room.settings.enableExtremeRanked)) {
-      return reply?.({ error: player.extremeModeEnabled ? "极限模式玩家不能进入普通排位房" : "非极限模式玩家不能进入极限排位房" });
-    }
-    if (player.extremeModeEnabled && rankMultiplierFor(room.settings) > 1) {
-      return reply?.({ error: "极限模式玩家不能进入倍率房" });
-    }
     const leaveResult = leaveRoom(player, "switchRoom");
     if (!leaveResult.ok) return reply?.({ error: leaveResult.error });
     player.roomId = room.id;
     let joinRole = "观战";
-    if (canAutoSeatOnJoin(room) && !room.seats.A) {
+    if (canAutoSeatOnJoin(room, player) && !room.seats.A) {
       room.seats.A = publicPlayer(player);
       joinRole = "战斗席 A";
     }
-    else if (canAutoSeatOnJoin(room) && !room.seats.B) {
+    else if (canAutoSeatOnJoin(room, player) && !room.seats.B) {
       room.seats.B = publicPlayer(player);
       joinRole = "战斗席 B";
     }
@@ -2040,6 +2047,8 @@ io.on("connection", (socket) => {
     const room = player?.roomId ? rooms.get(player.roomId) : undefined;
     if (!player || !room) return reply?.({ error: "你不在房间中" });
     if (room.phase === "punishment") return reply?.({ error: "惩罚完成前不能切换座位" });
+    const rankedRestriction = rankedSeatRestrictionText(room, player);
+    if (rankedRestriction) return reply?.({ error: rankedRestriction });
     if (room.seats[seat]) return reply?.({ error: "这个战斗席已经有人了" });
     const oldSeat = seatOf(room, player.id);
     // 如果本局已经有人出拳，已坐下的玩家不能换座躲避本局。

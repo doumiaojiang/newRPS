@@ -136,6 +136,32 @@ export function App() {
   const [announcement, setAnnouncement] = useState<AnnouncementPayload | null>(null);
   const [connectionState, setConnectionState] = useState<"connected" | "connecting" | "disconnected">(() => socket.connected ? "connected" : "connecting");
   const [theme, setTheme] = useState<"light" | "dark">(() => (localStorage.getItem("rps-online-theme") === "dark" ? "dark" : "light"));
+  const restoreInFlightRef = useRef(false);
+
+  async function restoreSession(options: { showRecoveredNotice?: boolean; clearBadToken?: boolean } = {}) {
+    if (restoreInFlightRef.current) return;
+    const token = localStorage.getItem(tokenKey);
+    const cachedName = localStorage.getItem("rps-online-name") || "";
+    const cachedGender = localStorage.getItem("rps-online-gender") || "male";
+    if (!token || !cachedName) return;
+    restoreInFlightRef.current = true;
+    try {
+      const next = await ask<MeState>("player:join", { name: cachedName, genderId: cachedGender, token });
+      setMe(next);
+      if (next.room) setRoom(next.room);
+      else setRoom(null);
+      if (!isAdminRoute()) {
+        setView(next.room ? "room" : "lobby");
+        if (next.room?.phase === "punishment") setNotice("已恢复到未完成的惩罚房间。");
+        else if (options.showRecoveredNotice) setNotice("连接已恢复，玩家状态已同步。");
+      }
+    } catch {
+      if (options.clearBadToken) localStorage.removeItem(tokenKey);
+      if (options.showRecoveredNotice) setNotice("连接已恢复，但玩家状态同步失败，请刷新或重新进入。");
+    } finally {
+      restoreInFlightRef.current = false;
+    }
+  }
 
   useEffect(() => {
     socket.on("lobby:update", (nextLobby: LobbySnapshot) => {
@@ -180,7 +206,7 @@ export function App() {
     });
     socket.on("connect", () => {
       setConnectionState("connected");
-      setNotice("连接已恢复。");
+      restoreSession({ showRecoveredNotice: true });
     });
     socket.on("disconnect", () => {
       setConnectionState("disconnected");
@@ -240,22 +266,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const token = localStorage.getItem(tokenKey);
-    if (!token) return;
-    const cachedName = localStorage.getItem("rps-online-name") || "";
-    const cachedGender = localStorage.getItem("rps-online-gender") || "male";
-    if (cachedName) {
-      ask<MeState>("player:join", { name: cachedName, genderId: cachedGender, token })
-        .then((next) => {
-          setMe(next);
-          if (next.room) setRoom(next.room);
-          if (!isAdminRoute()) {
-            setView(next.room ? "room" : "lobby");
-            if (next.room?.phase === "punishment") setNotice("已恢复到未完成的惩罚房间。");
-          }
-        })
-        .catch(() => localStorage.removeItem(tokenKey));
-    }
+    restoreSession({ clearBadToken: true });
   }, []);
 
   useEffect(() => {
@@ -459,14 +470,12 @@ function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lo
     try {
       const targetRoom = lobby.rooms.find((room) => room.id === roomId);
       if (targetRoom?.enableRanked && Boolean(targetRoom.enableExtremeRanked) !== Boolean(me.extremeModeEnabled)) {
-        onError(me.extremeModeEnabled ? "极限模式玩家不能进入普通排位房" : "非极限模式玩家不能进入极限排位房");
-        return;
+        const ok = window.confirm(me.extremeModeEnabled
+          ? "你是极限模式玩家，进入普通排位房后只能在观战席，不能上桌。确认进入？"
+          : "你不是极限模式玩家，进入极限排位房后只能在观战席，不能上桌。确认进入？");
+        if (!ok) return;
       }
-      if (me.extremeModeEnabled && targetRoom?.enableRanked && (targetRoom.rankMultiplier || 1) > 1) {
-        onError("极限模式玩家不能进入倍率房");
-        return;
-      }
-      if (targetRoom?.enableExtremeRanked) {
+      if (targetRoom?.enableExtremeRanked && me.extremeModeEnabled) {
         const ok = window.confirm(`这是极限排位房，胜负会按极限模式规则结算，并存在连胜风险，确认进入？`);
         if (!ok) return;
       }
@@ -1522,11 +1531,12 @@ function SeatView({ seat, room, me, now, onSit }: { seat: SeatKey; room: RoomSna
   const occupant = room.seats[seat];
   const choice = room.revealedChoices?.[seat] || (occupant?.id === me.id ? room.choices[seat] : room.choices[seat] ? "hidden" : undefined);
   const stats = room.seatStats[seat];
+  const battleSeatBlocked = Boolean(room.settings.enableRanked && Boolean(me.extremeModeEnabled) !== Boolean(room.settings.enableExtremeRanked));
   return (
     <div className={`seat-card seat-${seat.toLowerCase()}`}>
       <div className="seat-identity">
         <span className="seat-label">玩家 {seat}</span>
-        {occupant ? <strong>{"isBot" in occupant ? `🤖 ${occupant.name}` : <PlayerBadge player={occupant} compact />}</strong> : <button onClick={onSit}>🪑 坐下</button>}
+        {occupant ? <strong>{"isBot" in occupant ? `🤖 ${occupant.name}` : <PlayerBadge player={occupant} compact />}</strong> : <button disabled={battleSeatBlocked} title={battleSeatBlocked ? "当前排位类型不匹配，只能观战" : "坐到战斗席"} onClick={onSit}>{battleSeatBlocked ? "👀 只能观战" : "🪑 坐下"}</button>}
       </div>
       {occupant && !("isBot" in occupant) && <OfflineBadge player={occupant} now={now} />}
       <p className="choice-badge">{choice ? choiceText(choice) : room.seats.A && room.seats.B ? "🤔 等待出拳" : "⏳ 等人"}</p>
@@ -2111,9 +2121,9 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
             </div>
             <Toggle label="开启极限模式" value={extremeModeEnabled} disabled={(!me.extremeModeEnabled && (me.stats.rankedPoints < 0 || extremeCooldownMs > 0)) || extremeCannotClose} onChange={setExtremeModeEnabled} />
             <p className="hint">开启要求当前排位分不为负；开启后排位分归零，但胜负平和惩罚次数保留。</p>
-            <p className="hint">极限模式不能创建或进入倍率房，只能玩极限排位房；非极限玩家不能进入极限排位房。</p>
+            <p className="hint">极限模式不能创建倍率房；进入普通排位或倍率房时只能观战，不能上桌。非极限玩家进入极限排位房也只能观战。</p>
             <p className="hint">正分输分和负分加分会按段位折扣；整点会自动扣分，离线也会扣。</p>
-            <p className="hint">极限排位连胜达到 {config.extremeMode.winStreakThreshold} 局后，每次继续获胜都有 {Math.round(config.extremeMode.winStreakCrashChance * 100)}% 几率变成 {config.extremeMode.crashTargetPoints} 分。</p>
+            <p className="hint">极限排位连胜达到 {config.extremeMode.winStreakThreshold} 局后，每次继续获胜都有 {Math.round(config.extremeMode.winStreakCrashChance * 100)}% 几率额外扣 {config.extremeMode.crashTargetPoints} 分。</p>
             {me.stats.rankedPoints < 0 && !me.extremeModeEnabled && <p className="hint danger-hint">你当前是负分，不能开启极限模式。</p>}
             {extremeCannotClose && <p className="hint danger-hint">只有正分玩家可以关闭极限模式。</p>}
             {extremeCooldownMs > 0 && <p className="hint">关闭后冷却：约 {extremeCooldownHours} 小时后可重新开启。</p>}
@@ -2704,15 +2714,15 @@ function AdminPanel({ config, lobby, onBack, onError }: { config: AppConfig; lob
           <div className="admin-preview-card">
             <span>预览</span>
             <strong>{extreme.emoji} {extreme.label}</strong>
-            <p>关闭后冷却 {extreme.cooldownHours} 小时；{extreme.winStreakThreshold} 连胜后 {Math.round(extreme.winStreakCrashChance * 100)}% 变成 {extreme.crashTargetPoints} 分。</p>
+            <p>关闭后冷却 {extreme.cooldownHours} 小时；{extreme.winStreakThreshold} 连胜后 {Math.round(extreme.winStreakCrashChance * 100)}% 额外扣 {extreme.crashTargetPoints} 分。</p>
           </div>
           <div className="config-row">
             <label className="field-label"><span>显示名称</span><input value={extreme.label} maxLength={16} onChange={(event) => patchExtreme({ ...extreme, label: event.target.value })} /></label>
             <label className="field-label"><span>标志 Emoji</span><input value={extreme.emoji} maxLength={4} onChange={(event) => patchExtreme({ ...extreme, emoji: event.target.value })} /></label>
             <label className="field-label"><span>关闭后冷却小时</span><input type="number" min={1} max={168} value={extreme.cooldownHours} onChange={(event) => patchExtreme({ ...extreme, cooldownHours: Number(event.target.value) })} /></label>
             <label className="field-label"><span>连胜阈值</span><input type="number" min={1} max={100} value={extreme.winStreakThreshold} onChange={(event) => patchExtreme({ ...extreme, winStreakThreshold: Number(event.target.value) })} /></label>
-            <label className="field-label"><span>爆分概率 0-1</span><input type="number" min={0} max={1} step={0.01} value={extreme.winStreakCrashChance} onChange={(event) => patchExtreme({ ...extreme, winStreakCrashChance: Number(event.target.value) })} /></label>
-            <label className="field-label"><span>爆分目标分</span><input type="number" min={-1999} max={999} value={extreme.crashTargetPoints} onChange={(event) => patchExtreme({ ...extreme, crashTargetPoints: Number(event.target.value) })} /></label>
+            <label className="field-label"><span>连胜风险概率 0-1</span><input type="number" min={0} max={1} step={0.01} value={extreme.winStreakCrashChance} onChange={(event) => patchExtreme({ ...extreme, winStreakCrashChance: Number(event.target.value) })} /></label>
+            <label className="field-label"><span>连胜风险扣分</span><input type="number" min={1} max={1999} value={extreme.crashTargetPoints} onChange={(event) => patchExtreme({ ...extreme, crashTargetPoints: Number(event.target.value) })} /></label>
           </div>
           <div className="admin-card">
             <div className="admin-card-title">

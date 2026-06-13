@@ -103,7 +103,7 @@
     "hourlyDecay": { "pos4": 10, "pos3": 6, "pos2": 4, "pos1": 2, "default": 2 },
     "winStreakThreshold": 10,
     "winStreakCrashChance": 0.5,
-    "crashTargetPoints": -999
+    "crashTargetPoints": 333
   },
   "bots": {
     "names": ["Bot 小蓝", "Bot 小粉", "随机拳机", "布布机器人"],

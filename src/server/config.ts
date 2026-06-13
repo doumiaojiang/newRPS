@@ -89,7 +89,7 @@ const defaultExtremeMode: AppConfig["extremeMode"] = {
   hourlyDecay: { pos4: 10, pos3: 6, pos2: 4, pos1: 2, default: 2 },
   winStreakThreshold: 10,
   winStreakCrashChance: 0.5,
-  crashTargetPoints: -999
+  crashTargetPoints: 333
 };
 const defaultAccessControl = { maxOnlinePerIp: 3, maxCreatesPer10Min: 5 };
 const defaultRoomInfoTags: Record<string, RoomInfoTagStyle> = {
@@ -256,7 +256,7 @@ function normalizeExtremeMode(input?: Partial<AppConfig["extremeMode"]>): AppCon
     hourlyDecay: normalizeNumberRecord(input?.hourlyDecay, defaultExtremeMode.hourlyDecay, 0, 999),
     winStreakThreshold: clampNumber(input?.winStreakThreshold, 1, 100, defaultExtremeMode.winStreakThreshold),
     winStreakCrashChance: clampRatio(input?.winStreakCrashChance, defaultExtremeMode.winStreakCrashChance),
-    crashTargetPoints: clampNumber(input?.crashTargetPoints, -1999, 999, defaultExtremeMode.crashTargetPoints)
+    crashTargetPoints: clampNumber(input?.crashTargetPoints, 1, 1999, defaultExtremeMode.crashTargetPoints)
   };
 }
 
@@ -391,7 +391,8 @@ export function validateConfig(input: AppConfig) {
     if (!Number.isFinite(value) || value < 0) throw new Error(`极限模式 ${key} 整点扣分不能小于 0`);
   }
   if (!Number.isFinite(input.extremeMode.winStreakThreshold) || input.extremeMode.winStreakThreshold < 1) throw new Error("极限模式连胜阈值至少为 1");
-  if (!Number.isFinite(input.extremeMode.winStreakCrashChance) || input.extremeMode.winStreakCrashChance < 0 || input.extremeMode.winStreakCrashChance > 1) throw new Error("极限模式爆分概率必须在 0 到 1 之间");
+  if (!Number.isFinite(input.extremeMode.winStreakCrashChance) || input.extremeMode.winStreakCrashChance < 0 || input.extremeMode.winStreakCrashChance > 1) throw new Error("极限模式连胜风险概率必须在 0 到 1 之间");
+  if (!Number.isFinite(input.extremeMode.crashTargetPoints) || input.extremeMode.crashTargetPoints < 1) throw new Error("极限模式连胜风险扣分至少为 1");
   if (!Number.isFinite(input.accessControl?.maxOnlinePerIp) || input.accessControl.maxOnlinePerIp < 1) throw new Error("同 IP 在线人数限制至少为 1");
   if (!Number.isFinite(input.accessControl?.maxCreatesPer10Min) || input.accessControl.maxCreatesPer10Min < 1) throw new Error("同 IP 10 分钟新建玩家限制至少为 1");
   if (!input.bots?.names?.length || !input.bots?.difficulties?.length) throw new Error("bot 名字和难度不能为空");
