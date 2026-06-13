@@ -1633,6 +1633,54 @@ main {
   overflow-wrap: anywhere;
 }
 
+.othello-ready-card {
+  width: min(100%, 680px);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, #38a474 34%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, #38a474 9%, var(--panel-solid));
+  padding: 10px;
+}
+
+.othello-ready-card strong,
+.othello-ready-card p {
+  margin: 0;
+}
+
+.othello-draw-animation {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.othello-ready-card.drawing .othello-draw-animation span {
+  animation: othello-draw-bounce 0.7s ease-in-out infinite alternate;
+}
+
+.othello-ready-card.drawing .othello-draw-animation span:nth-child(2) {
+  animation-delay: 0.14s;
+}
+
+.othello-ready-card.drawing .othello-draw-animation span:nth-child(3) {
+  animation-delay: 0.28s;
+}
+
+@keyframes othello-draw-bounce {
+  from {
+    transform: translateY(0) scale(0.92);
+    opacity: 0.62;
+  }
+  to {
+    transform: translateY(-5px) scale(1.08);
+    opacity: 1;
+  }
+}
+
 .othello-live-rank {
   grid-column: 1 / -1;
   font-size: 11px;

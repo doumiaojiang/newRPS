@@ -5,6 +5,7 @@ import type { AppConfig, BotDifficulty, ChatMessage, GenderFaction, LobbySnapsho
 
 const tokenKey = "rps-online-token";
 const defaultRoomName = "新的锤子剪刀布房间";
+const defaultOthelloRoomName = "新的黑白棋房间";
 const maxImageUploadBytes = 8 * 1024 * 1024;
 
 type MeState = { player: PublicPlayer; token: string; roomId?: string; room?: RoomSnapshot };
@@ -624,9 +625,12 @@ function CreateRoom({ config, me, onCreated, onCancel, onError }: { config: AppC
     });
   }, [config.punishments, config.bots.difficulties, config.roomTags]);
 
-  function patch(next: Partial<RoomSettings>) {
+function patch(next: Partial<RoomSettings>) {
     setSettings((old) => {
       const merged = { ...old, ...next };
+      if (!customRoomName && next.gameId) {
+        merged.name = next.gameId === "othello" ? defaultOthelloRoomName : defaultRoomName;
+      }
       if (next.gameId === "othello" || merged.gameId === "othello") {
         merged.enableBot = false;
         merged.enablePunishment = false;
@@ -931,6 +935,7 @@ function CreateRoom({ config, me, onCreated, onCancel, onError }: { config: AppC
 }
 
 function generateRoomName(config: AppConfig, settings: RoomSettings) {
+  if (settings.gameId === "othello") return defaultOthelloRoomName;
   const pool = settings.punishmentSource === "player"
     ? config.playerPunishmentRoomNamePool
     : primaryPunishmentForSettings(config, settings)?.roomNamePool;
@@ -1143,6 +1148,14 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
     }
   }
 
+  async function readyOthello() {
+    try {
+      await ask("othello:ready", {});
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "准备失败");
+    }
+  }
+
   async function submitProof() {
     try {
       await ask("punishment:submit", { text: proofText, imageUrl: proofImage });
@@ -1234,7 +1247,7 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
       <div className="room-content-grid">
         <div className="actions-panel panel">
           {room.settings.gameId === "othello" ? (
-            <OthelloPanel room={room} me={me} onMove={playOthello} onRestart={restartOthello} />
+            <OthelloPanel room={room} me={me} onMove={playOthello} onRestart={restartOthello} onReady={readyOthello} />
           ) : mySeat && (
             <div className="move-panel">
               <div>
@@ -1397,38 +1410,71 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
 
 function OthelloScore({ room }: { room: RoomSnapshot }) {
   const state = room.othello;
-  if (!state) return <p className="settlement-placeholder">等待双方坐满</p>;
+  if (!state) {
+    const bothReady = room.ready.A && room.ready.B;
+    return <p className="settlement-placeholder">{bothReady ? "正在随机先手" : "等待准备"}</p>;
+  }
   return (
     <div className="othello-score-mini">
       <span>⚫ {state.blackCount}</span>
       <span>⚪ {state.whiteCount}</span>
-      {room.settings.enableRanked && state.rankedDelta && <span className="othello-live-rank">黑 {state.rankedDelta.A >= 0 ? "+" : ""}{state.rankedDelta.A} / 白 {state.rankedDelta.B >= 0 ? "+" : ""}{state.rankedDelta.B}</span>}
-      <strong>{state.ended ? room.resultText || "对局结束" : `轮到玩家 ${state.turn}`}</strong>
+      {room.settings.enableRanked && state.rankedDelta && <span className="othello-live-rank">黑 {othelloDeltaText(state, "black")} / 白 {othelloDeltaText(state, "white")}</span>}
+      <strong>{state.ended ? room.resultText || "对局结束" : `轮到${state.blackSeat === state.turn ? "黑棋" : "白棋"}`}</strong>
     </div>
   );
 }
 
-function OthelloPanel({ room, me, onMove, onRestart }: { room: RoomSnapshot; me: PublicPlayer; onMove: (row: number, col: number) => void; onRestart: () => void }) {
+function OthelloPanel({ room, me, onMove, onRestart, onReady }: { room: RoomSnapshot; me: PublicPlayer; onMove: (row: number, col: number) => void; onRestart: () => void; onReady: () => void }) {
   const state = room.othello;
   const mySeat = room.seats.A?.id === me.id ? "A" : room.seats.B?.id === me.id ? "B" : null;
   const isMyTurn = Boolean(state && mySeat && state.turn === mySeat && room.phase === "choosing" && !state.ended);
   const legalKeys = new Set((state?.legalMoves || []).map((move) => `${move.row}-${move.col}`));
   const turnName = state?.turn === "A" ? occupantDisplay(room.seats.A) : occupantDisplay(room.seats.B);
+  const waitingForReady = room.phase === "ready" && Boolean(room.seats.A && room.seats.B);
+  const drawingFirst = waitingForReady && room.ready.A && room.ready.B;
+  const myReady = mySeat ? room.ready[mySeat] : false;
+  const blackSeat = state?.blackSeat;
+  const whiteSeat = blackSeat ? (blackSeat === "A" ? "B" : "A") : null;
   return (
     <div className="othello-panel">
       <div className="othello-head">
         <div>
           <h3>⚫⚪ 黑白棋</h3>
-          <p className="hint">{!state ? "等待两个战斗席坐满后开始。" : state.ended ? room.resultText || "对局结束" : isMyTurn ? "轮到你落子。" : `轮到 ${turnName} 落子。`}</p>
+          <p className="hint">
+            {!room.seats.A || !room.seats.B
+              ? "等待两个战斗席坐满。"
+              : drawingFirst
+                ? "正在随机执黑先手..."
+                : waitingForReady
+                  ? "双方准备后随机决定谁执黑先手。"
+                  : state?.ended
+                    ? room.resultText || "对局结束"
+                    : isMyTurn ? "轮到你落子。" : `轮到 ${turnName} 落子。`}
+          </p>
         </div>
         {state && (
           <div className="othello-turn-card">
-            <span>{state.turn === "A" ? "⚫ 黑棋" : "⚪ 白棋"}</span>
+            <span>{state.blackSeat === state.turn ? "⚫ 黑棋" : "⚪ 白棋"}</span>
             <strong>{state.blackCount} : {state.whiteCount}</strong>
-            {room.settings.enableRanked && state.rankedDelta && <small>本局排位：黑 {state.rankedDelta.A >= 0 ? "+" : ""}{state.rankedDelta.A} / 白 {state.rankedDelta.B >= 0 ? "+" : ""}{state.rankedDelta.B}</small>}
+            {room.settings.enableRanked && state.rankedDelta && <small>本局排位：黑 {othelloDeltaText(state, "black")} / 白 {othelloDeltaText(state, "white")}</small>}
           </div>
         )}
       </div>
+      {waitingForReady && (
+        <div className={`othello-ready-card ${drawingFirst ? "drawing" : ""}`}>
+          <div className="othello-draw-animation" aria-hidden="true">
+            <span>⚫</span>
+            <span>⚪</span>
+            <span>⚫</span>
+          </div>
+          <div>
+            <strong>{drawingFirst ? "抽签中..." : myReady ? "你已准备" : "准备开始"}</strong>
+            <p className="hint">A：{room.ready.A ? "已准备" : "未准备"} · B：{room.ready.B ? "已准备" : "未准备"}</p>
+          </div>
+          {mySeat && !myReady && !drawingFirst && <button className="primary" onClick={onReady}>准备</button>}
+          {mySeat && myReady && !drawingFirst && <button disabled>等待对方</button>}
+        </div>
+      )}
       {state?.ended && mySeat && <button className="primary othello-restart-button" onClick={onRestart}>再来一局</button>}
       <div className="othello-board" role="grid" aria-label="黑白棋棋盘">
         {(state?.board || Array.from({ length: 8 }, () => Array.from({ length: 8 }, () => null))).map((row, rowIndex) => row.map((cell, colIndex) => {
@@ -1449,12 +1495,18 @@ function OthelloPanel({ room, me, onMove, onRestart }: { room: RoomSnapshot; me:
         }))}
       </div>
       <div className="othello-legend">
-        <span>玩家 A：⚫ 黑棋先手</span>
-        <span>玩家 B：⚪ 白棋</span>
+        <span>⚫ 黑棋：{blackSeat ? occupantDisplay(room.seats[blackSeat]) : "准备后随机"}</span>
+        <span>⚪ 白棋：{whiteSeat ? occupantDisplay(room.seats[whiteSeat]) : "准备后随机"}</span>
         <span>{mySeat ? `你在战斗席 ${mySeat}` : "你正在观战"}</span>
       </div>
     </div>
   );
+}
+
+function othelloDeltaText(state: NonNullable<RoomSnapshot["othello"]>, color: "black" | "white") {
+  const seat = color === "black" ? state.blackSeat : state.blackSeat === "A" ? "B" : "A";
+  const delta = state.rankedDelta?.[seat] || 0;
+  return `${delta >= 0 ? "+" : ""}${delta}`;
 }
 
 function occupantDisplay(occupant: SeatOccupant) {
@@ -1483,7 +1535,7 @@ function RoundHistoryCard({ item, onOpenImage }: { item: RoomSnapshot["roundHist
       <div className="history-duel">
         <div className="history-side">
           <span>{item.playerA}</span>
-          <strong>{item.gameId === "othello" ? "⚫ 黑棋" : choiceText(item.moveA)}</strong>
+          <strong>{item.gameId === "othello" ? item.othelloBlackSeat === "B" ? "⚪ 白棋" : "⚫ 黑棋" : choiceText(item.moveA)}</strong>
         </div>
         <div className="history-result">
           <small>{item.gameId === "othello" && item.othelloScore ? `${item.othelloScore.black} : ${item.othelloScore.white}` : "VS"}</small>
@@ -1491,7 +1543,7 @@ function RoundHistoryCard({ item, onOpenImage }: { item: RoomSnapshot["roundHist
         </div>
         <div className="history-side">
           <span>{item.playerB}</span>
-          <strong>{item.gameId === "othello" ? "⚪ 白棋" : choiceText(item.moveB)}</strong>
+          <strong>{item.gameId === "othello" ? item.othelloBlackSeat === "B" ? "⚫ 黑棋" : "⚪ 白棋" : choiceText(item.moveB)}</strong>
         </div>
       </div>
       {item.punishedNames.length > 0 && (

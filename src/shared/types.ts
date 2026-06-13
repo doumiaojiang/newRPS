@@ -19,6 +19,7 @@ export type OthelloCell = "black" | "white" | null;
 export type OthelloState = {
   board: OthelloCell[][];
   turn: SeatKey;
+  blackSeat: SeatKey;
   legalMoves: Array<{ row: number; col: number }>;
   passCount: number;
   blackCount: number;
@@ -207,6 +208,7 @@ export type RoundHistoryItem = {
   resultText: string;
   gameId?: GameId;
   othelloScore?: { black: number; white: number };
+  othelloBlackSeat?: SeatKey;
   ranked: boolean;
   stake?: RankStake;
   rankMultiplier?: RankMultiplier;
