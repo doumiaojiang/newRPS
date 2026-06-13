@@ -1465,7 +1465,7 @@ main {
   justify-self: start;
 }
 
-.versus strong {
+.score-number {
   font-size: 30px;
   line-height: 1;
   white-space: nowrap;
@@ -1509,7 +1509,9 @@ main {
   max-width: 100%;
   line-height: 1.35;
   overflow-wrap: anywhere;
+  word-break: break-word;
   text-align: center;
+  white-space: normal;
 }
 
 @keyframes settle-pop {
@@ -3627,7 +3629,7 @@ main {
     font-size: 12px;
   }
 
-  .versus strong {
+  .score-number {
     font-size: 24px;
   }
 
@@ -3648,6 +3650,7 @@ main {
   .settlement-pop span,
   .settlement-pop strong {
     text-align: left;
+    max-width: 100%;
   }
 
   .settlement-pop span {

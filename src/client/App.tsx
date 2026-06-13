@@ -1146,7 +1146,7 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
         <SeatView seat="A" room={room} me={me} now={now} onSit={() => act("room:sit", { seat: "A" })} />
         <div className="versus">
           <span className="versus-label">⚔️ 对战比分</span>
-          <strong>{room.score.A} : {room.score.B}</strong>
+          <strong className="score-number">{room.score.A} : {room.score.B}</strong>
           <Settlement room={room} />
         </div>
         <SeatView seat="B" room={room} me={me} now={now} onSit={() => act("room:sit", { seat: "B" })} />
