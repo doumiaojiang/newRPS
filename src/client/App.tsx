@@ -106,7 +106,12 @@ function playerSyncKey(player: PublicPlayer) {
     player.giveawayVoteCount || 0,
     player.giveawayVoteLikesThisHour || 0,
     player.giveawayVoteDislikesThisHour || 0,
-    player.rankMultiplierUnlocked ? "1" : "0"
+    player.rankMultiplierUnlocked ? "1" : "0",
+    player.extremeModeEnabled ? "1" : "0",
+    player.extremeModeToggledAt || 0,
+    player.extremeModeCooldownUntil || 0,
+    player.extremeWinStreak || 0,
+    player.extremeLastDecayHour || 0
   ].join("|");
 }
 
@@ -345,6 +350,7 @@ function PlayerBadge({ player, compact = false }: { player: PublicPlayer; compac
     return (
       <span className={`player-badge name-war-badge ${compact ? "compact" : ""}`}>
         <strong>{player.nameWarPenaltyName}</strong>
+        <ExtremeChip player={player} />
         <GiveawayChip player={player} />
       </span>
     );
@@ -354,9 +360,15 @@ function PlayerBadge({ player, compact = false }: { player: PublicPlayer; compac
       <span className="gender-chip" style={genderStyle(player)} title={player.factionLabel}>{player.genderLabel}</span>
       <span className={`title-chip ${titleClass(player.stats.rankedPoints)}`}>{player.stats.title}</span>
       <strong>{displayPlayerName(player)}</strong>
+      <ExtremeChip player={player} />
       <GiveawayChip player={player} />
     </span>
   );
+}
+
+function ExtremeChip({ player }: { player: PublicPlayer }) {
+  if (!player.extremeModeEnabled) return null;
+  return <span className="extreme-chip">⚡ 极限</span>;
 }
 
 function shouldShowGiveawayValue(player: PublicPlayer) {
@@ -444,6 +456,18 @@ function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lo
   async function joinRoom(roomId: string) {
     try {
       const targetRoom = lobby.rooms.find((room) => room.id === roomId);
+      if (targetRoom?.enableRanked && Boolean(targetRoom.enableExtremeRanked) !== Boolean(me.extremeModeEnabled)) {
+        onError(me.extremeModeEnabled ? "极限模式玩家不能进入普通排位房" : "非极限模式玩家不能进入极限排位房");
+        return;
+      }
+      if (me.extremeModeEnabled && targetRoom?.enableRanked && (targetRoom.rankMultiplier || 1) > 1) {
+        onError("极限模式玩家不能进入倍率房");
+        return;
+      }
+      if (targetRoom?.enableExtremeRanked) {
+        const ok = window.confirm(`这是极限排位房，胜负会按极限模式规则结算，并存在连胜风险，确认进入？`);
+        if (!ok) return;
+      }
       if (targetRoom?.enableRanked && (targetRoom.rankMultiplier || 1) > 1) {
         const multiplier = targetRoom.rankMultiplier || 1;
         const effectiveStake = targetRoom.stake * multiplier;
@@ -484,7 +508,7 @@ function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lo
               style={room.roomBackgroundImage ? { "--room-card-bg": `url(${room.roomBackgroundImage})` } as CSSProperties : undefined}
             >
               <div>
-                <h3>{room.name} <RankMultiplierBadge multiplier={room.rankMultiplier} /></h3>
+                <h3>{room.name} <ExtremeRankedBadge enabled={room.enableExtremeRanked} /> <RankMultiplierBadge multiplier={room.rankMultiplier} /></h3>
                 {room.tags?.length ? <RoomTagList tags={room.tags} /> : null}
                 <RoomVersusLine room={room} />
                 <p>{room.status} · {room.players}/2 战斗席 · {room.spectators} 观战</p>
@@ -551,7 +575,8 @@ function CreateRoom({ config, me, onCreated, onCancel, onError }: { config: AppC
     enableRanked: false,
     stake: 5,
     enableRankMultiplier: false,
-    rankMultiplier: 1
+    rankMultiplier: 1,
+    enableExtremeRanked: false
   });
   const [customRoomName, setCustomRoomName] = useState(false);
 
@@ -589,6 +614,7 @@ function CreateRoom({ config, me, onCreated, onCancel, onError }: { config: AppC
         merged.enableRanked = false;
         merged.enableRankMultiplier = false;
         merged.rankMultiplier = 1;
+        merged.enableExtremeRanked = false;
       }
       if (next.enableRanked) {
         merged.enableBot = false;
@@ -596,14 +622,25 @@ function CreateRoom({ config, me, onCreated, onCancel, onError }: { config: AppC
       if (next.enableRanked === false) {
         merged.enableRankMultiplier = false;
         merged.rankMultiplier = 1;
+        merged.enableExtremeRanked = false;
       }
       if (next.enableRankMultiplier) {
         merged.enableRanked = true;
         merged.enableBot = false;
+        merged.enableExtremeRanked = false;
         if (!([2, 5, 10] as const).includes(merged.rankMultiplier as 2 | 5 | 10)) merged.rankMultiplier = 2;
+      }
+      if (next.enableExtremeRanked) {
+        merged.enableRanked = true;
+        merged.enableBot = false;
+        merged.enableRankMultiplier = false;
+        merged.rankMultiplier = 1;
       }
       if (!merged.enableRankMultiplier) {
         merged.rankMultiplier = 1;
+      }
+      if (!merged.enableRanked) {
+        merged.enableExtremeRanked = false;
       }
       if (next.enableBot && merged.punishmentSource === "player") {
         merged.punishmentSource = "system";
@@ -708,25 +745,39 @@ function CreateRoom({ config, me, onCreated, onCancel, onError }: { config: AppC
           <div className="create-section">
             <h3>玩法</h3>
             <div className="ranked-choice-grid">
-              <button type="button" className={`ranked-choice-card ${!settings.enableRanked ? "active" : ""}`} onClick={() => patch({ enableRanked: false })}>
+              <button type="button" className={`ranked-choice-card ${!settings.enableRanked ? "active" : ""}`} onClick={() => patch({ enableRanked: false, enableExtremeRanked: false })}>
                 <span>🎮 普通局</span>
                 <small>不增加/减少排位积分，可以和 Bot 对战。</small>
               </button>
               {([5, 10, 20] as const).map((stake) => (
-                <button type="button" className={`ranked-choice-card ${settings.enableRanked && settings.stake === stake ? "active" : ""}`} key={stake} onClick={() => patch({ enableRanked: true, stake })}>
-                  <span>🏆 排位 {stake} 分</span>
-                  <small>胜利 +{stake}，失败 -{stake}；普通平局不扣分，平局双罚时双方 -{stake}。</small>
+                <button type="button" className={`ranked-choice-card ${settings.enableRanked && settings.stake === stake ? "active" : ""}`} key={stake} onClick={() => patch({ enableRanked: true, stake, enableExtremeRanked: Boolean(me.extremeModeEnabled) })}>
+                  <span>{me.extremeModeEnabled ? "⚡ 极限排位" : "🏆 排位"} {stake} 分</span>
+                  <small>{me.extremeModeEnabled ? "只能创建极限排位房；非极限玩家无法进入。" : `胜利 +${stake}，失败 -${stake}；普通平局不扣分，平局双罚时双方 -${stake}。`}</small>
                 </button>
               ))}
             </div>
             {settings.enableBot && <p className="hint">开启 Bot 时不能选择排位战。</p>}
+            {settings.enableRanked && me.extremeModeEnabled && (
+              <div className="multiplier-box extreme-mode-box">
+                <div className="multiplier-head">
+                  <strong>⚡ 极限排位已开启</strong>
+                  <span>禁用倍率</span>
+                </div>
+                <p className="hint">极限排位会按你的极限模式分段调整加减分；非极限玩家无法进入这个房间。</p>
+              </div>
+            )}
+            {settings.enableRanked && !me.extremeModeEnabled && (
+              <p className="hint">你没有开启极限模式，因此只能创建普通排位房。</p>
+            )}
             {settings.enableRanked && (
               <div className="multiplier-box">
                 <div className="multiplier-head">
                   <strong>倍率模式</strong>
                   <span>{settings.enableRankMultiplier ? `x${settings.rankMultiplier || 1}` : "未开启"}</span>
                 </div>
-                {!me.rankMultiplierUnlocked ? (
+                {me.extremeModeEnabled ? (
+                  <p className="hint danger-hint">极限模式不能开启倍率房间，也不能进入倍率房。</p>
+                ) : !me.rankMultiplierUnlocked ? (
                   <>
                     <p className="hint">提交 200 排位积分后，本次服务器运行期间可创建 2倍 / 5倍 / 10倍排位房。</p>
                     <button type="button" className="soft-button" disabled={me.stats.rankedPoints < 200} onClick={unlockMultiplierMode}>提交 200 积分解锁</button>
@@ -856,6 +907,11 @@ function rankMultiplierForSettings(settings: Pick<RoomSettings, "enableRanked" |
 function RankMultiplierBadge({ multiplier }: { multiplier?: number }) {
   if (!multiplier || multiplier <= 1) return null;
   return <span className="rank-multiplier-badge">x{multiplier}</span>;
+}
+
+function ExtremeRankedBadge({ enabled }: { enabled?: boolean }) {
+  if (!enabled) return null;
+  return <span className="rank-multiplier-badge extreme-ranked-badge">⚡ 极限</span>;
 }
 
 function preventEnterSubmit(event: ReactKeyboardEvent<HTMLInputElement>) {
@@ -1078,7 +1134,7 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
         style={room.settings.roomBackgroundImage ? { "--room-header-bg": `url(${room.settings.roomBackgroundImage})` } as CSSProperties : undefined}
       >
         <div>
-          <h2><Swords size={20} /> {room.settings.name} <RankMultiplierBadge multiplier={rankMultiplierForSettings(room.settings)} /></h2>
+          <h2><Swords size={20} /> {room.settings.name} <ExtremeRankedBadge enabled={room.settings.enableExtremeRanked} /> <RankMultiplierBadge multiplier={rankMultiplierForSettings(room.settings)} /></h2>
           {room.settings.enableTags && room.settings.tags?.length ? <RoomTagList tags={room.settings.tags} /> : null}
           <RoomInfoTagList tags={roomInfoTags(config, room)} />
         </div>
@@ -1268,6 +1324,7 @@ function RoundHistoryCard({ item, onOpenImage }: { item: RoomSnapshot["roundHist
         </div>
         <div className="history-tags">
           {item.ranked && <em>🏆 {item.stake}分{item.rankMultiplier && item.rankMultiplier > 1 ? ` ×${item.rankMultiplier}` : ""}</em>}
+          {item.extremeRanked && <em>⚡ 极限</em>}
           {item.punishedNames.length > 0 && <em>🎲 惩罚</em>}
         </div>
       </header>
@@ -1517,6 +1574,7 @@ function roomInfoTags(config: AppConfig, room: RoomSnapshot) {
     room.settings.enableRanked ? roomInfoTag(config, "ranked", ` ${room.settings.stake} 分`) : roomInfoTag(config, "normal"),
     punishmentInfoTag(config, room)
   ];
+  if (room.settings.enableExtremeRanked) tags.push(roomInfoTag(config, "extremeRanked"));
   const multiplier = rankMultiplierForSettings(room.settings);
   if (multiplier > 1) tags.push(roomInfoTag(config, "ranked", ` 倍率 x${multiplier}`));
   if (room.settings.enablePunishment) {
@@ -1532,6 +1590,7 @@ function lobbyRoomInfoTags(config: AppConfig, room: LobbySnapshot["rooms"][numbe
     room.enableRanked ? roomInfoTag(config, "ranked") : roomInfoTag(config, "normal"),
     room.enablePunishment ? roomInfoTag(config, "punishment", punishmentSelectionText(config, room)) : roomInfoTag(config, "noPunishment")
   ];
+  if (room.enableExtremeRanked) tags.push(roomInfoTag(config, "extremeRanked"));
   if (room.enableRanked && (room.rankMultiplier || 1) > 1) tags.push(roomInfoTag(config, "ranked", ` 倍率 x${room.rankMultiplier}`));
   if (room.enablePunishment) {
     if (room.tieDoublePunish) tags.push(roomInfoTag(config, "tieDoublePunish"));
@@ -1885,6 +1944,7 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
   const [nameWarEnabled, setNameWarEnabled] = useState(Boolean(me.nameWarEnabled));
   const [nameWarAllowRename, setNameWarAllowRename] = useState(Boolean(me.nameWarAllowRename));
   const [giveawayEnabled, setGiveawayEnabled] = useState(Boolean(me.giveawayEnabled));
+  const [extremeModeEnabled, setExtremeModeEnabled] = useState(Boolean(me.extremeModeEnabled));
   const [now, setNow] = useState(Date.now());
   const decisive = me.stats.wins + me.stats.losses;
   const winRate = decisive === 0 ? 0 : Math.round((me.stats.wins / decisive) * 100);
@@ -1899,12 +1959,17 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
   const nameLockedByWar = Boolean(me.nameWarEnabled || nameWarEnabled);
   const giveawayValue = me.giveawayValue || 0;
   const giveawayCannotClose = Boolean(me.giveawayEnabled && !giveawayEnabled && giveawayValue > 0);
+  const extremeModeChanged = extremeModeEnabled !== Boolean(me.extremeModeEnabled);
+  const extremeCooldownMs = me.extremeModeCooldownUntil ? Math.max(0, me.extremeModeCooldownUntil - now) : 0;
+  const extremeCooldownHours = Math.ceil(extremeCooldownMs / 3_600_000);
+  const extremeCannotEnable = Boolean(!me.extremeModeEnabled && extremeModeEnabled && (me.stats.rankedPoints < 0 || extremeCooldownMs > 0));
+  const extremeCannotClose = Boolean(me.extremeModeEnabled && !extremeModeEnabled && me.stats.rankedPoints <= 0);
 
   useEffect(() => {
-    if (!cooldownMs && !nameWarCooldownMs) return;
+    if (!cooldownMs && !nameWarCooldownMs && !extremeCooldownMs) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [cooldownMs, nameWarCooldownMs]);
+  }, [cooldownMs, nameWarCooldownMs, extremeCooldownMs]);
 
   useEffect(() => {
     if (!nameWarEnabled) setNameWarAllowRename(false);
@@ -1927,8 +1992,20 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
       onError("白给值归零前不能关闭白给模式");
       return;
     }
+    if (extremeCannotEnable) {
+      onError(extremeCooldownMs > 0 ? `极限模式冷却中，请 ${extremeCooldownHours} 小时后再开启` : "负分玩家不能开启极限模式");
+      return;
+    }
+    if (extremeCannotClose) {
+      onError("只有正分玩家可以关闭极限模式");
+      return;
+    }
+    if (!me.extremeModeEnabled && extremeModeEnabled) {
+      const ok = window.confirm("开启极限模式会把当前排位分归零，并禁止进入倍率房。胜负平和惩罚次数会保留。确认开启？");
+      if (!ok) return;
+    }
     try {
-      const result = await ask<{ player: PublicPlayer }>("player:updateProfile", { name, genderId, nameWarEnabled, nameWarAllowRename, giveawayEnabled });
+      const result = await ask<{ player: PublicPlayer }>("player:updateProfile", { name, genderId, nameWarEnabled, nameWarAllowRename, giveawayEnabled, extremeModeEnabled });
       onUpdated(result.player);
       onError("个人资料已更新");
     } catch (error) {
@@ -1956,6 +2033,7 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
           <Stat label="排位积分" value={`${me.stats.rankedPoints}`} />
           <Stat label="当前称号" value={me.nameWarPunished ? "已隐藏" : me.stats.title} />
           <Stat label="白给值" value={`${formatGiveawayValue(giveawayValue)}%`} />
+          <Stat label="极限模式" value={me.extremeModeEnabled ? `连胜 ${me.extremeWinStreak || 0}` : "未开启"} />
         </div>
 
         <div className="profile-edit">
@@ -2000,8 +2078,22 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
             <p className="hint">白给值归零后，才可以关闭这个模式。可以在大厅的白给自救板提交宣言，等待其他玩家点赞帮你降低。</p>
             {giveawayCannotClose && <p className="hint danger-hint">当前还有 {formatGiveawayValue(giveawayValue)}% 白给值，暂时不能关闭。</p>}
           </div>
+          <div className="name-war-card extreme-profile-card">
+            <div className="admin-card-title">
+              <strong>{config.extremeMode.emoji} {config.extremeMode.label}</strong>
+              <small>{me.extremeModeEnabled ? `连胜 ${me.extremeWinStreak || 0}` : extremeCooldownMs > 0 ? `冷却 ${extremeCooldownHours} 小时` : "未开启"}</small>
+            </div>
+            <Toggle label="开启极限模式" value={extremeModeEnabled} disabled={(!me.extremeModeEnabled && (me.stats.rankedPoints < 0 || extremeCooldownMs > 0)) || extremeCannotClose} onChange={setExtremeModeEnabled} />
+            <p className="hint">开启要求当前排位分不为负；开启后排位分归零，但胜负平和惩罚次数保留。</p>
+            <p className="hint">极限模式不能创建或进入倍率房，只能玩极限排位房；非极限玩家不能进入极限排位房。</p>
+            <p className="hint">正分输分和负分加分会按段位折扣；整点会自动扣分，离线也会扣。</p>
+            <p className="hint">极限排位连胜达到 {config.extremeMode.winStreakThreshold} 局后，每次继续获胜都有 {Math.round(config.extremeMode.winStreakCrashChance * 100)}% 几率变成 {config.extremeMode.crashTargetPoints} 分。</p>
+            {me.stats.rankedPoints < 0 && !me.extremeModeEnabled && <p className="hint danger-hint">你当前是负分，不能开启极限模式。</p>}
+            {extremeCannotClose && <p className="hint danger-hint">只有正分玩家可以关闭极限模式。</p>}
+            {extremeCooldownMs > 0 && <p className="hint">关闭后冷却：约 {extremeCooldownHours} 小时后可重新开启。</p>}
+          </div>
           <div className="profile-action-row">
-            <button className="primary" disabled={(nameChanged && (cooldownMs > 0 || nameLockedByWar)) || ((nameWarChanged || nameWarAllowRenameChanged) && nameWarCooldownMs > 0) || giveawayCannotClose} onClick={saveProfile}><Save size={16} /> 保存个人资料</button>
+            <button className="primary" disabled={(nameChanged && (cooldownMs > 0 || nameLockedByWar)) || ((nameWarChanged || nameWarAllowRenameChanged) && nameWarCooldownMs > 0) || giveawayCannotClose || extremeCannotEnable || extremeCannotClose} onClick={saveProfile}><Save size={16} /> 保存个人资料</button>
             <button onClick={onClose}>关闭个人设置</button>
           </div>
         </div>
@@ -2010,7 +2102,7 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
   );
 }
 
-type AdminSection = "site" | "factions" | "titles" | "punishments" | "roomTags" | "roomInfoTags" | "nameWar" | "giveaway" | "accessControl" | "bots" | "messages" | "actions" | "advanced";
+type AdminSection = "site" | "factions" | "titles" | "punishments" | "roomTags" | "roomInfoTags" | "nameWar" | "giveaway" | "extremeMode" | "accessControl" | "bots" | "messages" | "actions" | "advanced";
 
 const roomInfoTagOrder = [
   { key: "phaseReady", label: "等待坐满" },
@@ -2019,6 +2111,7 @@ const roomInfoTagOrder = [
   { key: "phasePunishment", label: "惩罚阶段" },
   { key: "normal", label: "普通局" },
   { key: "ranked", label: "排位" },
+  { key: "extremeRanked", label: "极限排位" },
   { key: "punishment", label: "惩罚开启" },
   { key: "noPunishment", label: "无惩罚" },
   { key: "tieDoublePunish", label: "平局双罚" },
@@ -2157,6 +2250,7 @@ function AdminPanel({ config, lobby, onBack, onError }: { config: AppConfig; lob
     { id: "roomInfoTags", label: "房间信息标签", detail: "房间头部彩色标签" },
     { id: "nameWar", label: "名字争夺战", detail: draft.nameWar.penaltyPrefix },
     { id: "giveaway", label: "白给模式", detail: draft.giveaway.panelTitle },
+    { id: "extremeMode", label: "极限模式", detail: `${draft.extremeMode.emoji} ${draft.extremeMode.label}` },
     { id: "accessControl", label: "防多开", detail: `${draft.accessControl.maxOnlinePerIp} 在线 / ${draft.accessControl.maxCreatesPer10Min} 新建` },
     { id: "bots", label: "Bot 设置", detail: `${draft.bots.difficulties.length} 个难度` },
     { id: "messages", label: "系统提示", detail: `${Object.keys(draft.messages).length} 条文案` },
@@ -2571,6 +2665,62 @@ function AdminPanel({ config, lobby, onBack, onError }: { config: AppConfig; lob
             <input value={draft.giveaway.emptyText} maxLength={60} onChange={(event) => patch({ giveaway: { ...draft.giveaway, emptyText: event.target.value } })} placeholder="还没有人在白给自救板上。" />
           </label>
           <p className="hint">规则固定：白给按钮 +2%，强制白给后 +2%；点赞 -1%，倒赞 +0.1%；真人对战生效，Bot 对战不生效。</p>
+        </div>
+      );
+    }
+
+    if (activeSection === "extremeMode") {
+      const extreme = draft.extremeMode;
+      const patchExtreme = (nextExtreme: AppConfig["extremeMode"]) => patch({ extremeMode: nextExtreme });
+      return (
+        <div className="config-section admin-section-card">
+          <AdminSectionHeader title="极限模式" subtitle="修改极限模式名称、标志、折扣、整点扣分和连胜风险。" />
+          <div className="admin-preview-card">
+            <span>预览</span>
+            <strong>{extreme.emoji} {extreme.label}</strong>
+            <p>关闭后冷却 {extreme.cooldownHours} 小时；{extreme.winStreakThreshold} 连胜后 {Math.round(extreme.winStreakCrashChance * 100)}% 变成 {extreme.crashTargetPoints} 分。</p>
+          </div>
+          <div className="config-row">
+            <label className="field-label"><span>显示名称</span><input value={extreme.label} maxLength={16} onChange={(event) => patchExtreme({ ...extreme, label: event.target.value })} /></label>
+            <label className="field-label"><span>标志 Emoji</span><input value={extreme.emoji} maxLength={4} onChange={(event) => patchExtreme({ ...extreme, emoji: event.target.value })} /></label>
+            <label className="field-label"><span>关闭后冷却小时</span><input type="number" min={1} max={168} value={extreme.cooldownHours} onChange={(event) => patchExtreme({ ...extreme, cooldownHours: Number(event.target.value) })} /></label>
+            <label className="field-label"><span>连胜阈值</span><input type="number" min={1} max={100} value={extreme.winStreakThreshold} onChange={(event) => patchExtreme({ ...extreme, winStreakThreshold: Number(event.target.value) })} /></label>
+            <label className="field-label"><span>爆分概率 0-1</span><input type="number" min={0} max={1} step={0.01} value={extreme.winStreakCrashChance} onChange={(event) => patchExtreme({ ...extreme, winStreakCrashChance: Number(event.target.value) })} /></label>
+            <label className="field-label"><span>爆分目标分</span><input type="number" min={-1999} max={999} value={extreme.crashTargetPoints} onChange={(event) => patchExtreme({ ...extreme, crashTargetPoints: Number(event.target.value) })} /></label>
+          </div>
+          <div className="admin-card">
+            <div className="admin-card-title">
+              <strong>正分输分比例</strong>
+              <small>0.9 表示只扣 90%</small>
+            </div>
+            <div className="config-row">
+              {(["pos1", "pos2", "pos3", "pos4"] as const).map((key) => (
+                <label className="field-label" key={key}><span>{key}</span><input type="number" min={0} max={1} step={0.01} value={extreme.positiveLossRates[key]} onChange={(event) => patchExtreme({ ...extreme, positiveLossRates: { ...extreme.positiveLossRates, [key]: Number(event.target.value) } })} /></label>
+              ))}
+            </div>
+          </div>
+          <div className="admin-card">
+            <div className="admin-card-title">
+              <strong>负分赢分比例</strong>
+              <small>-1000 以下按 neg4</small>
+            </div>
+            <div className="config-row">
+              {(["neg1", "neg2", "neg3", "neg4"] as const).map((key) => (
+                <label className="field-label" key={key}><span>{key}</span><input type="number" min={0} max={1} step={0.01} value={extreme.negativeWinRates[key]} onChange={(event) => patchExtreme({ ...extreme, negativeWinRates: { ...extreme.negativeWinRates, [key]: Number(event.target.value) } })} /></label>
+              ))}
+            </div>
+          </div>
+          <div className="admin-card">
+            <div className="admin-card-title">
+              <strong>整点扣分</strong>
+              <small>default 用于 0 分及负分</small>
+            </div>
+            <div className="config-row">
+              {(["pos4", "pos3", "pos2", "pos1", "default"] as const).map((key) => (
+                <label className="field-label" key={key}><span>{key}</span><input type="number" min={0} max={999} value={extreme.hourlyDecay[key]} onChange={(event) => patchExtreme({ ...extreme, hourlyDecay: { ...extreme.hourlyDecay, [key]: Number(event.target.value) } })} /></label>
+              ))}
+            </div>
+          </div>
         </div>
       );
     }

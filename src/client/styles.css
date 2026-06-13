@@ -246,7 +246,8 @@ main {
 
 .gender-chip,
 .title-chip,
-.giveaway-chip {
+.giveaway-chip,
+.extreme-chip {
   display: inline-flex;
   align-items: center;
   min-height: 24px;
@@ -261,6 +262,14 @@ main {
 .giveaway-chip {
   border-color: color-mix(in srgb, var(--primary) 55%, var(--pink-border));
   background: linear-gradient(135deg, color-mix(in srgb, var(--primary) 16%, var(--panel-solid)), color-mix(in srgb, var(--pink) 24%, var(--panel-solid)));
+  color: var(--page-text);
+  font-weight: 900;
+}
+
+.extreme-chip,
+.extreme-ranked-badge {
+  border-color: color-mix(in srgb, #ffb75e 70%, var(--border));
+  background: linear-gradient(135deg, color-mix(in srgb, #ffcf7a 35%, var(--panel-solid)), color-mix(in srgb, #ff8fc7 18%, var(--panel-solid)));
   color: var(--page-text);
   font-weight: 900;
 }
@@ -2720,6 +2729,12 @@ main {
 .giveaway-profile-card {
   border-color: color-mix(in srgb, var(--primary) 54%, var(--pink-border));
   background: linear-gradient(135deg, color-mix(in srgb, var(--primary) 12%, var(--panel-solid)), color-mix(in srgb, var(--pink) 24%, var(--panel-solid)));
+}
+
+.extreme-profile-card,
+.extreme-mode-box {
+  border-color: color-mix(in srgb, #ffb75e 65%, var(--border));
+  background: linear-gradient(135deg, color-mix(in srgb, #ffcf7a 18%, var(--panel-solid)), color-mix(in srgb, #9ed7ff 12%, var(--panel-solid)));
 }
 
 .danger-hint {
