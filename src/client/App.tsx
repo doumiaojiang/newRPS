@@ -79,6 +79,7 @@ function playerSyncKey(player: PublicPlayer) {
     player.genderLabel,
     player.factionId,
     player.connected ? "1" : "0",
+    player.disconnectedAt || 0,
     player.disconnectExpiresAt || 0,
     player.stats.wins,
     player.stats.losses,
@@ -459,12 +460,19 @@ function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lo
   const suggestionListRef = useRef<HTMLDivElement | null>(null);
   const suggestionStickToBottomRef = useRef(true);
   const visibleSuggestions = lobby.suggestions.slice(0, 50).reverse();
-  const nameWarLosers = lobby.players.filter((player) => player.connected && isNameWarLoser(player));
+  const [now, setNow] = useState(Date.now());
+  const nameWarLosers = lobby.players.filter((player) => isNameWarLoserVisible(player, now));
 
   useEffect(() => {
     const list = suggestionListRef.current;
     if (list && suggestionStickToBottomRef.current) scrollToBottomSoon(list);
   }, [visibleSuggestions.length]);
+
+  useEffect(() => {
+    if (!lobby.players.some((player) => !player.connected && isNameWarLoser(player) && player.disconnectedAt)) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, [lobby.players]);
 
   async function joinRoom(roomId: string) {
     try {
@@ -1805,6 +1813,12 @@ function isNameWarLoser(player: PublicPlayer) {
   return Boolean(player.nameWarEnabled && player.nameWarAllowRename && player.nameWarPunished && player.stats.rankedPoints <= -1000);
 }
 
+function isNameWarLoserVisible(player: PublicPlayer, now = Date.now()) {
+  if (!isNameWarLoser(player)) return false;
+  if (player.connected) return true;
+  return Boolean(player.disconnectedAt && now - player.disconnectedAt <= 1_800_000);
+}
+
 function nameWarRenameQuotaLeft(player: PublicPlayer, now = Date.now()) {
   if (!player.nameWarRenameWindowStartedAt || now - player.nameWarRenameWindowStartedAt >= 10_800_000) return 3;
   return Math.max(0, 3 - (player.nameWarRenameCount || 0));
@@ -1840,14 +1854,19 @@ function NameWarLoserPanel({ title, losers, me, onError }: { title: string; lose
       <div className="name-war-loser-list">
         {losers.map((player) => {
           const protectedMs = player.nameWarRenameProtectedUntil ? Math.max(0, player.nameWarRenameProtectedUntil - now) : 0;
+          const offlineKeepMs = !player.connected && player.disconnectedAt ? Math.max(0, 1_800_000 - (now - player.disconnectedAt)) : 0;
           const protectedText = protectedMs > 0 ? `保护中 ${Math.ceil(protectedMs / 3_600_000)} 小时` : "可被改名";
           const disabled = !canRename || player.id === me.id || protectedMs > 0;
           return (
             <div className="name-war-loser-card" key={player.id}>
               <div className="admin-card-title">
                 <strong>{player.nameWarPenaltyName || player.name}</strong>
-                <small>{player.stats.rankedPoints} 分 · {protectedText}</small>
+                <small>
+                  <span className={`online-dot ${player.connected ? "online" : "offline"}`}>{player.connected ? "在线" : "离线"}</span>
+                  {player.stats.rankedPoints} 分 · {protectedText}
+                </small>
               </div>
+              {offlineKeepMs > 0 && <p className="hint">离线保留：约 {Math.ceil(offlineKeepMs / 60_000)} 分钟后从名单隐藏。</p>}
               {player.nameWarRenamedByName && <p className="hint">最后改名者：{player.nameWarRenamedByName}</p>}
               <div className="send-row">
                 <input value={inputs[player.id] || ""} maxLength={12} disabled={disabled} onChange={(event) => setInputs((old) => ({ ...old, [player.id]: event.target.value }))} placeholder={disabled ? "暂时不能改名" : "输入新名字"} />

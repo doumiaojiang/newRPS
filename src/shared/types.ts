@@ -55,6 +55,7 @@ export type PublicPlayer = {
   factionColors: GenderColors;
   displayName: string;
   connected: boolean;
+  disconnectedAt?: number;
   disconnectExpiresAt?: number;
   profileUpdatedAt?: number;
   nameWarEnabled?: boolean;

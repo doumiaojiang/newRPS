@@ -1646,6 +1646,7 @@ io.on("connection", (socket) => {
     player.socketId = socket.id;
     player.ipAddress = ipAddress;
     player.connected = true;
+    player.disconnectedAt = undefined;
     player.disconnectExpiresAt = undefined;
     if (!player.nameWarEnabled) {
       player.name = cleanName;
@@ -2376,6 +2377,7 @@ io.on("connection", (socket) => {
       if (!current || current.socketId || current.disconnectGraceTimer !== player.disconnectGraceTimer) return;
       current.disconnectGraceTimer = undefined;
       current.connected = false;
+      current.disconnectedAt = Date.now();
       current.disconnectExpiresAt = Date.now() + 60_000;
       refreshPlayerSnapshots(current);
       if (current.roomId) {
