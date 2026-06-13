@@ -349,8 +349,7 @@ function PlayerBadge({ player, compact = false }: { player: PublicPlayer; compac
   if (player.nameWarPunished && player.nameWarPenaltyName) {
     return (
       <span className={`player-badge name-war-badge ${compact ? "compact" : ""}`}>
-        <strong>{player.nameWarPenaltyName}</strong>
-        <ExtremeChip player={player} />
+        <strong>{displayPlayerName(player)}</strong>
         <GiveawayChip player={player} />
       </span>
     );
@@ -360,15 +359,18 @@ function PlayerBadge({ player, compact = false }: { player: PublicPlayer; compac
       <span className="gender-chip" style={genderStyle(player)} title={player.factionLabel}>{player.genderLabel}</span>
       <span className={`title-chip ${titleClass(player.stats.rankedPoints)}`}>{player.stats.title}</span>
       <strong>{displayPlayerName(player)}</strong>
-      <ExtremeChip player={player} />
+      <ModeChip player={player} />
       <GiveawayChip player={player} />
     </span>
   );
 }
 
-function ExtremeChip({ player }: { player: PublicPlayer }) {
-  if (!player.extremeModeEnabled) return null;
-  return <span className="extreme-chip">⚡ 极限</span>;
+function ModeChip({ player }: { player: PublicPlayer }) {
+  const showNameWar = Boolean(player.nameWarEnabled && !player.nameWarPunished);
+  if (player.extremeModeEnabled && showNameWar) return <span className="mode-chip">⚡⚔️ 极限名争</span>;
+  if (player.extremeModeEnabled) return <span className="mode-chip">⚡ 极限</span>;
+  if (showNameWar) return <span className="mode-chip">⚔️ 名争</span>;
+  return null;
 }
 
 function shouldShowGiveawayValue(player: PublicPlayer) {
@@ -381,8 +383,8 @@ function GiveawayChip({ player }: { player: PublicPlayer }) {
 }
 
 function displayPlayerName(player: PublicPlayer) {
-  if (player.nameWarPunished && player.nameWarPenaltyName) return player.nameWarPenaltyName;
-  return `${player.nameWarEnabled ? "⚔️ " : ""}${player.name}`;
+  if (player.nameWarPunished && player.nameWarPenaltyName) return `${player.extremeModeEnabled ? "极 " : ""}${player.nameWarPenaltyName}`;
+  return player.name;
 }
 
 function firstGenderId(config: AppConfig) {
@@ -1663,7 +1665,7 @@ function Leaderboard({ title, players }: { title: string; players: PublicPlayer[
   );
 }
 
-type GlobalLeaderboardTab = "positive" | "negative" | "nameWar" | "giveaway";
+type GlobalLeaderboardTab = "positive" | "negative" | "extremePositive" | "extremeNegative" | "nameWar" | "giveaway";
 
 function GlobalLeaderboardPanel({ players, onClose }: { players: PublicPlayer[]; onClose: () => void }) {
   const [tab, setTab] = useState<GlobalLeaderboardTab>("positive");
@@ -1680,7 +1682,17 @@ function GlobalLeaderboardPanel({ players, onClose }: { players: PublicPlayer[];
   }, [players]);
 
   const ranked = leaderboardPlayers(players, tab).slice(0, 50);
-  const title = tab === "positive" ? "正分榜" : tab === "negative" ? "负分榜" : tab === "nameWar" ? "名字争夺战榜" : "白给榜";
+  const title = tab === "positive"
+    ? "正分榜"
+    : tab === "negative"
+      ? "负分榜"
+      : tab === "extremePositive"
+        ? "极限正分榜"
+        : tab === "extremeNegative"
+          ? "极限负分榜"
+          : tab === "nameWar"
+            ? "名字争夺战榜"
+            : "白给榜";
   return (
     <div className="modal-backdrop leaderboard-backdrop" onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section className="leaderboard-modal">
@@ -1694,6 +1706,8 @@ function GlobalLeaderboardPanel({ players, onClose }: { players: PublicPlayer[];
         <div className="segmented leaderboard-tabs">
           <button className={tab === "positive" ? "active" : ""} onClick={() => setTab("positive")}>正分</button>
           <button className={tab === "negative" ? "active" : ""} onClick={() => setTab("negative")}>负分</button>
+          <button className={tab === "extremePositive" ? "active" : ""} onClick={() => setTab("extremePositive")}>极限正</button>
+          <button className={tab === "extremeNegative" ? "active" : ""} onClick={() => setTab("extremeNegative")}>极限负</button>
           <button className={tab === "nameWar" ? "active" : ""} onClick={() => setTab("nameWar")}>名争</button>
           <button className={tab === "giveaway" ? "active" : ""} onClick={() => setTab("giveaway")}>白给</button>
         </div>
@@ -1726,6 +1740,8 @@ function leaderboardPlayers(players: PublicPlayer[], tab: GlobalLeaderboardTab) 
   const copy = [...players];
   if (tab === "positive") return copy.filter((player) => player.stats.rankedPoints > 0).sort((a, b) => b.stats.rankedPoints - a.stats.rankedPoints || b.stats.wins - a.stats.wins);
   if (tab === "negative") return copy.filter((player) => player.stats.rankedPoints < 0).sort((a, b) => a.stats.rankedPoints - b.stats.rankedPoints || b.stats.losses - a.stats.losses);
+  if (tab === "extremePositive") return copy.filter((player) => player.extremeModeEnabled && player.stats.rankedPoints > 0).sort((a, b) => b.stats.rankedPoints - a.stats.rankedPoints || (b.extremeWinStreak || 0) - (a.extremeWinStreak || 0));
+  if (tab === "extremeNegative") return copy.filter((player) => player.extremeModeEnabled && player.stats.rankedPoints < 0).sort((a, b) => a.stats.rankedPoints - b.stats.rankedPoints || (b.extremeWinStreak || 0) - (a.extremeWinStreak || 0));
   if (tab === "nameWar") {
     return copy
       .filter((player) => player.nameWarEnabled || player.nameWarPunished)
@@ -1754,6 +1770,13 @@ function LeaderboardExtra({ player, tab, now }: { player: PublicPlayer; tab: Glo
         白给 {formatGiveawayValue(player.giveawayValue || 0)}%
         {player.giveawayBoardText && boardMs > 0 ? ` · 已上板 ${formatDuration(boardMs)}` : ""}
         {player.giveawayBoardText ? ` · 👍 ${player.giveawayBoardLikes || 0} / 👎 ${player.giveawayBoardDislikes || 0}` : ""}
+      </p>
+    );
+  }
+  if (tab === "extremePositive" || tab === "extremeNegative") {
+    return (
+      <p className="global-rank-extra">
+        ⚡ 极限模式 · 连胜 {player.extremeWinStreak || 0}
       </p>
     );
   }

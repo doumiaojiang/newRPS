@@ -247,7 +247,7 @@ main {
 .gender-chip,
 .title-chip,
 .giveaway-chip,
-.extreme-chip {
+.mode-chip {
   display: inline-flex;
   align-items: center;
   min-height: 24px;
@@ -266,7 +266,7 @@ main {
   font-weight: 900;
 }
 
-.extreme-chip,
+.mode-chip,
 .extreme-ranked-badge {
   border-color: color-mix(in srgb, #ffb75e 70%, var(--border));
   background: linear-gradient(135deg, color-mix(in srgb, #ffcf7a 35%, var(--panel-solid)), color-mix(in srgb, #ff8fc7 18%, var(--panel-solid)));
@@ -1083,7 +1083,7 @@ main {
 }
 
 .leaderboard-tabs {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -3348,6 +3348,10 @@ main {
 
   .ranked-choice-grid {
     gap: 7px;
+  }
+
+  .leaderboard-tabs {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .ranked-choice-card {
