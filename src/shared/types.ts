@@ -13,6 +13,20 @@ export type Move = "rock" | "scissors" | "paper" | "giveaway" | "forfeit" | "noM
 export type RoundResult = "A" | "B" | "draw" | "doubleLoss";
 export type GamePhase = "waiting" | "ready" | "choosing" | "result" | "punishment";
 export type SeatKey = "A" | "B";
+export type GameId = "rps" | "othello";
+export type RankStake = 1 | 2 | 5 | 10 | 20;
+export type OthelloCell = "black" | "white" | null;
+export type OthelloState = {
+  board: OthelloCell[][];
+  turn: SeatKey;
+  legalMoves: Array<{ row: number; col: number }>;
+  passCount: number;
+  blackCount: number;
+  whiteCount: number;
+  rankedDelta?: Record<SeatKey, number>;
+  ended?: boolean;
+  winner?: RoundResult;
+};
 export type RankMultiplier = 1 | 2 | 5 | 10;
 export type BotDifficulty = "easy" | "normal" | "chaos";
 export type BotStrategy = "random" | "counter" | "chaos" | "throw" | "win";
@@ -43,6 +57,15 @@ export type PublicStats = {
   rankedPoints: number;
   title: string;
   titleSegmentId?: string;
+};
+
+export type OthelloStats = {
+  wins: number;
+  losses: number;
+  draws: number;
+  games: number;
+  captured: number;
+  lost: number;
 };
 
 export type PublicPlayer = {
@@ -92,6 +115,7 @@ export type PublicPlayer = {
   roomId?: string;
   isAdmin?: boolean;
   stats: PublicStats;
+  othelloStats: OthelloStats;
 };
 
 export type BotPlayer = {
@@ -129,7 +153,7 @@ export type Suggestion = {
 export type RoomSettings = {
   name: string;
   password?: string;
-  gameId: "rps";
+  gameId: GameId;
   enableBot: boolean;
   botDifficulty: BotDifficulty;
   enablePunishment: boolean;
@@ -143,7 +167,7 @@ export type RoomSettings = {
   tieDoublePunish: boolean;
   requireOpponentConfirm: boolean;
   enableRanked: boolean;
-  stake: 5 | 10 | 20;
+  stake: RankStake;
   enableRankMultiplier?: boolean;
   rankMultiplier?: RankMultiplier;
   enableExtremeRanked?: boolean;
@@ -181,8 +205,10 @@ export type RoundHistoryItem = {
   result: RoundResult;
   resultLabel: string;
   resultText: string;
+  gameId?: GameId;
+  othelloScore?: { black: number; white: number };
   ranked: boolean;
-  stake?: 5 | 10 | 20;
+  stake?: RankStake;
   rankMultiplier?: RankMultiplier;
   effectiveStake?: number;
   extremeRanked?: boolean;
@@ -227,6 +253,7 @@ export type RoomSnapshot = {
   ready: Record<SeatKey, boolean>;
   choices: Partial<Record<SeatKey, Move | "hidden">>;
   revealedChoices?: Partial<Record<SeatKey, Move>>;
+  othello?: OthelloState;
   resultText?: string;
   punishedPlayerIds: string[];
   proofs: PunishmentProof[];
@@ -258,6 +285,7 @@ export type LobbySnapshot = {
   players: PublicPlayer[];
   rooms: Array<{
     id: string;
+    gameId: GameId;
     code: string;
     name: string;
     hasPassword: boolean;
@@ -277,7 +305,7 @@ export type LobbySnapshot = {
     tieDoublePunish: boolean;
     requireOpponentConfirm: boolean;
     enableRanked: boolean;
-    stake: 5 | 10 | 20;
+    stake: RankStake;
     enableRankMultiplier?: boolean;
     rankMultiplier?: RankMultiplier;
     enableExtremeRanked?: boolean;
@@ -358,7 +386,7 @@ export type AppConfig = {
     }>;
   };
   games: Array<{
-    id: "rps";
+    id: GameId;
     name: string;
     description: string;
   }>;

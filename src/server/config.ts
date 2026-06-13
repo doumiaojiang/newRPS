@@ -73,6 +73,10 @@ const defaultPlayerPunishmentRoomNamePool: RoomNamePool = {
 };
 
 const defaultRoomTags = ["轻松", "认真", "排位", "惩罚", "聊天"];
+const defaultGames: AppConfig["games"] = [
+  { id: "rps", name: "锤子剪刀布", description: "双方同时选择石头、剪刀、布，服务器公开结算。" },
+  { id: "othello", name: "黑白棋", description: "8x8 棋盘轮流落子，服务器判断翻棋和胜负。" }
+];
 const defaultNameWar = { penaltyPrefix: "失名者", loserPanelTitle: "名字争夺战失格者", escapeTitle: "逃跑的人" };
 const defaultGiveaway = {
   panelTitle: "白给自救板",
@@ -165,6 +169,7 @@ function normalizeConfig(input: AppConfig): AppConfig {
       difficulties: normalizeBotDifficulties(input.bots?.difficulties || [])
     },
     roomTags: cleanLines(input.roomTags, defaultRoomTags),
+    games: normalizeGames(input.games),
     roomInfoTags: normalizeRoomInfoTags(input.roomInfoTags),
     accessControl: {
       maxOnlinePerIp: clampNumber(input.accessControl?.maxOnlinePerIp, 1, 100, defaultAccessControl.maxOnlinePerIp),
@@ -184,6 +189,19 @@ function normalizeConfig(input: AppConfig): AppConfig {
     extremeMode: normalizeExtremeMode(input.extremeMode),
     playerPunishmentRoomNamePool: normalizeRoomNamePool(input.playerPunishmentRoomNamePool, defaultPlayerPunishmentRoomNamePool)
   };
+}
+
+function normalizeGames(input?: AppConfig["games"]) {
+  const games = new Map(defaultGames.map((game) => [game.id, game]));
+  for (const game of input || []) {
+    if (game.id !== "rps" && game.id !== "othello") continue;
+    games.set(game.id, {
+      id: game.id,
+      name: String(game.name || defaultGames.find((item) => item.id === game.id)?.name || game.id).trim().slice(0, 18),
+      description: String(game.description || defaultGames.find((item) => item.id === game.id)?.description || "").trim().slice(0, 120)
+    });
+  }
+  return ["rps", "othello"].map((id) => games.get(id as AppConfig["games"][number]["id"])!) as AppConfig["games"];
 }
 
 function normalizeRoomInfoTags(input?: Record<string, Partial<RoomInfoTagStyle>>) {

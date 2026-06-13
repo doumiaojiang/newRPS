@@ -783,6 +783,40 @@ main {
   margin: 0;
 }
 
+.game-create-section {
+  grid-column: 1 / -1;
+}
+
+.game-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.game-choice-card {
+  min-height: 92px;
+  align-items: flex-start;
+  text-align: left;
+  display: grid;
+  gap: 6px;
+  border-color: var(--border);
+  background: linear-gradient(180deg, var(--panel-solid), var(--panel-soft));
+}
+
+.game-choice-card.active {
+  border-color: var(--pink-border);
+  box-shadow: 0 0 0 3px rgba(255, 176, 211, 0.25);
+}
+
+.game-choice-card span {
+  font-weight: 900;
+}
+
+.game-choice-card small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -1083,7 +1117,7 @@ main {
 }
 
 .leaderboard-tabs {
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(78px, 1fr));
   gap: 6px;
 }
 
@@ -1553,6 +1587,130 @@ main {
 .move-panel h3,
 .move-panel p {
   margin: 0;
+}
+
+.othello-panel {
+  display: grid;
+  gap: 14px;
+  justify-items: center;
+}
+
+.othello-head {
+  width: min(100%, 680px);
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.othello-head h3,
+.othello-head p {
+  margin: 0;
+}
+
+.othello-turn-card,
+.othello-score-mini {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 8px 10px;
+  display: grid;
+  gap: 3px;
+  min-width: 112px;
+  text-align: center;
+}
+
+.othello-score-mini {
+  grid-template-columns: repeat(2, auto);
+  justify-content: center;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.othello-score-mini strong {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.othello-live-rank {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--muted);
+}
+
+.othello-turn-card small {
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.othello-board {
+  width: min(100%, 680px, 72dvh);
+  aspect-ratio: 1;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  border: 3px solid color-mix(in srgb, #2f7a5c 75%, var(--border));
+  border-radius: 8px;
+  overflow: hidden;
+  background: #2f8a64;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.16), 0 18px 36px rgba(44, 89, 78, 0.18);
+}
+
+.othello-cell {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid rgba(18, 72, 52, 0.55);
+  border-radius: 0;
+  background: #38a474;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+
+.othello-cell:not(:disabled):hover {
+  background: #45b883;
+}
+
+.othello-disc {
+  width: 72%;
+  aspect-ratio: 1;
+  border-radius: 999px;
+  box-shadow: inset 0 8px 12px rgba(255,255,255,0.18), inset 0 -8px 14px rgba(0,0,0,0.18), 0 4px 8px rgba(0,0,0,0.2);
+}
+
+.othello-disc.black {
+  background: radial-gradient(circle at 32% 28%, #5f6670, #10151a 64%);
+}
+
+.othello-disc.white {
+  background: radial-gradient(circle at 32% 28%, #ffffff, #d8e1e8 70%);
+}
+
+.othello-legal-dot {
+  width: 28%;
+  aspect-ratio: 1;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.46);
+  border: 2px solid rgba(255, 255, 255, 0.7);
+}
+
+.othello-legend {
+  width: min(100%, 680px);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.othello-legend span {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-soft);
+  padding: 5px 9px;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .move-panel h3,
@@ -3301,6 +3459,20 @@ main {
 
   .admin-login-card {
     grid-template-columns: 1fr;
+  }
+
+  .game-choice-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .othello-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .othello-board {
+    width: min(100%, calc(100dvh - 260px));
+    min-width: min(280px, 100%);
   }
 
   .admin-announcement-actions {

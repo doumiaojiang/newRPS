@@ -1,7 +1,7 @@
 import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from "react";
 import { Crown, DoorOpen, Download, Eye, MessageCircle, Moon, Pencil, RefreshCcw, Save, Settings, Shield, Sun, Swords, Upload, UserRound, Users } from "lucide-react";
 import { socket } from "./main";
-import type { AppConfig, BotDifficulty, ChatMessage, GenderFaction, LobbySnapshot, Move, PublicPlayer, PunishmentTaskConfig, RoomInfoTagStyle, RoomNamePool, RoomSettings, RoomSnapshot, RoundResult, SeatKey } from "../shared/types";
+import type { AppConfig, BotDifficulty, ChatMessage, GenderFaction, LobbySnapshot, Move, PublicPlayer, PunishmentTaskConfig, RoomInfoTagStyle, RoomNamePool, RoomSettings, RoomSnapshot, RoundResult, SeatKey, SeatOccupant } from "../shared/types";
 
 const tokenKey = "rps-online-token";
 const defaultRoomName = "新的锤子剪刀布房间";
@@ -490,7 +490,9 @@ function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lo
       if (targetRoom?.enableRanked && (targetRoom.rankMultiplier || 1) > 1) {
         const multiplier = targetRoom.rankMultiplier || 1;
         const effectiveStake = targetRoom.stake * multiplier;
-        const ok = window.confirm(`这是 ${multiplier} 倍排位房，本局胜负按 ${effectiveStake} 分结算，确认进入？`);
+        const ok = window.confirm(targetRoom.gameId === "othello"
+          ? `这是 ${multiplier} 倍黑白棋排位房，每翻 1 子按 ${effectiveStake} 分实时结算，确认进入？`
+          : `这是 ${multiplier} 倍排位房，本局胜负按 ${effectiveStake} 分结算，确认进入？`);
         if (!ok) return;
       }
       const result = await ask<{ room: RoomSnapshot }>("room:join", { roomId, password: passwords[roomId] });
@@ -625,6 +627,15 @@ function CreateRoom({ config, me, onCreated, onCancel, onError }: { config: AppC
   function patch(next: Partial<RoomSettings>) {
     setSettings((old) => {
       const merged = { ...old, ...next };
+      if (next.gameId === "othello" || merged.gameId === "othello") {
+        merged.enableBot = false;
+        merged.enablePunishment = false;
+        merged.punishmentSource = "system";
+        merged.punishmentIds = [];
+        merged.punishmentId = undefined;
+        merged.tieDoublePunish = false;
+        merged.requireOpponentConfirm = false;
+      }
       if (next.punishmentSource === "player") {
         merged.enablePunishment = true;
         merged.enableBot = false;
@@ -660,6 +671,22 @@ function CreateRoom({ config, me, onCreated, onCancel, onError }: { config: AppC
       }
       if (!merged.enableRanked) {
         merged.enableExtremeRanked = false;
+      }
+      if (merged.gameId === "othello") {
+        if (!([1, 2, 5, 10] as const).includes(merged.stake as 1 | 2 | 5 | 10)) merged.stake = 5;
+        merged.enableBot = false;
+        merged.enablePunishment = false;
+        merged.punishmentSource = "system";
+        merged.punishmentIds = [];
+        merged.punishmentId = undefined;
+        merged.tieDoublePunish = false;
+        merged.requireOpponentConfirm = false;
+        if (merged.enableExtremeRanked) {
+          merged.enableRankMultiplier = false;
+          merged.rankMultiplier = 1;
+        }
+      } else if (!([5, 10, 20] as const).includes(merged.stake as 5 | 10 | 20)) {
+        merged.stake = 5;
       }
       if (next.enableBot && merged.punishmentSource === "player") {
         merged.punishmentSource = "system";
@@ -723,6 +750,23 @@ function CreateRoom({ config, me, onCreated, onCancel, onError }: { config: AppC
         </div>
         <div className="create-scroll-area">
         <div className="create-box">
+          <div className="create-section game-create-section">
+            <h3>游戏</h3>
+            <div className="game-choice-grid">
+              {config.games.map((game) => (
+                <button
+                  type="button"
+                  className={`game-choice-card ${settings.gameId === game.id ? "active" : ""}`}
+                  key={game.id}
+                  onClick={() => patch({ gameId: game.id })}
+                >
+                  <span>{game.id === "othello" ? "⚫⚪" : "✊✌️🖐️"} {game.name}</span>
+                  <small>{game.description}</small>
+                </button>
+              ))}
+            </div>
+            {settings.gameId === "othello" && <p className="hint">黑白棋支持真人 1v1、观战、聊天和普通排位；Bot、惩罚、倍率、极限模式会自动关闭。</p>}
+          </div>
           <div className="create-section">
             <h3>基础</h3>
             <input value={settings.name} onKeyDown={preventEnterSubmit} onChange={(event) => { setCustomRoomName(true); patch({ name: event.target.value }); }} placeholder="房间名" />
@@ -738,7 +782,8 @@ function CreateRoom({ config, me, onCreated, onCancel, onError }: { config: AppC
           </div>
           <div className="create-section">
             <h3>对手</h3>
-            <Toggle label="开启 Bot" value={settings.enableBot} disabled={(settings.enablePunishment && settings.punishmentSource === "player") || settings.enableRanked} onChange={(value) => patch({ enableBot: value })} />
+            <Toggle label="开启 Bot" value={settings.enableBot} disabled={settings.gameId === "othello" || (settings.enablePunishment && settings.punishmentSource === "player") || settings.enableRanked} onChange={(value) => patch({ enableBot: value })} />
+            {settings.gameId === "othello" && <p className="hint">黑白棋暂不支持 Bot。</p>}
             {settings.enablePunishment && settings.punishmentSource === "player" && <p className="hint">玩家发布任务模式需要真人对战，不能开启 Bot。</p>}
             {settings.enableRanked && <p className="hint">排位战需要真人对战，不能开启 Bot。</p>}
             {settings.enableBot && (
@@ -768,13 +813,14 @@ function CreateRoom({ config, me, onCreated, onCancel, onError }: { config: AppC
                 <span>🎮 普通局</span>
                 <small>不增加/减少排位积分，可以和 Bot 对战。</small>
               </button>
-              {([5, 10, 20] as const).map((stake) => (
+              {(settings.gameId === "othello" ? ([1, 2, 5, 10] as const) : ([5, 10, 20] as const)).map((stake) => (
                 <button type="button" className={`ranked-choice-card ${settings.enableRanked && settings.stake === stake ? "active" : ""}`} key={stake} onClick={() => patch({ enableRanked: true, stake, enableExtremeRanked: Boolean(me.extremeModeEnabled) })}>
-                  <span>{me.extremeModeEnabled ? "⚡ 极限排位" : "🏆 排位"} {stake} 分</span>
-                  <small>{me.extremeModeEnabled ? "只能创建极限排位房；非极限玩家无法进入。" : `胜利 +${stake}，失败 -${stake}；普通平局不扣分，平局双罚时双方 -${stake}。`}</small>
+                  <span>{settings.gameId === "othello" ? "🏆 黑白棋排位" : me.extremeModeEnabled ? "⚡ 极限排位" : "🏆 排位"} {stake}{settings.gameId === "othello" ? " 分/子" : " 分"}</span>
+                  <small>{settings.gameId === "othello" ? `每翻掉对方 1 子立即结算 ${stake} 分，终局不重复结算。` : me.extremeModeEnabled ? "只能创建极限排位房；非极限玩家无法进入。" : `胜利 +${stake}，失败 -${stake}；普通平局不扣分，平局双罚时双方 -${stake}。`}</small>
                 </button>
               ))}
             </div>
+            {settings.gameId === "othello" && <p className="hint">黑白棋排位按实时翻子结算，可选 1/2/5/10 分/子；支持倍率和极限模式，但两者不能同时开启。</p>}
             {settings.enableBot && <p className="hint">开启 Bot 时不能选择排位战。</p>}
             {settings.enableRanked && me.extremeModeEnabled && (
               <div className="multiplier-box extreme-mode-box">
@@ -795,7 +841,7 @@ function CreateRoom({ config, me, onCreated, onCancel, onError }: { config: AppC
                   <span>{settings.enableRankMultiplier ? `x${settings.rankMultiplier || 1}` : "未开启"}</span>
                 </div>
                 {me.extremeModeEnabled ? (
-                  <p className="hint danger-hint">极限模式不能开启倍率房间，也不能进入倍率房。</p>
+                  <p className="hint danger-hint">极限模式不能开启倍率房间，也不能进入倍率房；黑白棋极限排位会按每次翻子实时套用极限折扣。</p>
                 ) : !me.rankMultiplierUnlocked ? (
                   <>
                     <p className="hint">提交 200 排位积分后，本次服务器运行期间可创建 2倍 / 5倍 / 10倍排位房。</p>
@@ -813,11 +859,11 @@ function CreateRoom({ config, me, onCreated, onCancel, onError }: { config: AppC
                           onClick={() => patch({ enableRankMultiplier: multiplier > 1, rankMultiplier: multiplier })}
                         >
                           <span>{multiplier === 1 ? "普通倍率" : `x${multiplier} 倍房`}</span>
-                          <small>{multiplier === 1 ? "按基础赌分结算。" : `胜负按 ${settings.stake * multiplier} 分结算。`}</small>
+                          <small>{multiplier === 1 ? "按基础赌分结算。" : settings.gameId === "othello" ? `每翻 1 子按 ${settings.stake * multiplier} 分结算。` : `胜负按 ${settings.stake * multiplier} 分结算。`}</small>
                         </button>
                       ))}
                     </div>
-                    <p className="hint">当前：排位 {settings.stake} 分 × {rankMultiplierForSettings(settings)} 倍 = 胜负 {settings.stake * rankMultiplierForSettings(settings)} 分。</p>
+                    <p className="hint">当前：排位 {settings.stake}{settings.gameId === "othello" ? " 分/子" : " 分"} × {rankMultiplierForSettings(settings)} 倍 = {settings.gameId === "othello" ? `每翻 1 子 ${settings.stake * rankMultiplierForSettings(settings)} 分` : `胜负 ${settings.stake * rankMultiplierForSettings(settings)} 分`}。</p>
                   </>
                 )}
               </div>
@@ -825,7 +871,8 @@ function CreateRoom({ config, me, onCreated, onCancel, onError }: { config: AppC
           </div>
           <div className="create-section">
             <h3>惩罚</h3>
-            <Toggle label="惩罚模式" value={settings.enablePunishment} onChange={(value) => patch({ enablePunishment: value })} />
+            <Toggle label="惩罚模式" value={settings.enablePunishment} disabled={settings.gameId === "othello"} onChange={(value) => patch({ enablePunishment: value })} />
+            {settings.gameId === "othello" && <p className="hint">黑白棋 V1 暂不支持惩罚模式。</p>}
             {settings.enablePunishment && (
               <>
                 <Select value={settings.punishmentSource || "system"} onChange={(value) => patch({ punishmentSource: value as RoomSettings["punishmentSource"] })} options={[
@@ -1080,6 +1127,22 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
     }
   }
 
+  async function playOthello(row: number, col: number) {
+    try {
+      await ask("othello:move", { row, col });
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "落子失败");
+    }
+  }
+
+  async function restartOthello() {
+    try {
+      await ask("othello:restart", {});
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "重新开始失败");
+    }
+  }
+
   async function submitProof() {
     try {
       await ask("punishment:submit", { text: proofText, imageUrl: proofImage });
@@ -1164,13 +1227,15 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
         <div className="versus">
           <span className="versus-label">⚔️ 对战比分</span>
           <strong className="score-number">{room.score.A} : {room.score.B}</strong>
-          <Settlement room={room} />
+          {room.settings.gameId === "othello" ? <OthelloScore room={room} /> : <Settlement room={room} />}
         </div>
         <SeatView seat="B" room={room} me={me} now={now} onSit={() => act("room:sit", { seat: "B" })} />
       </div>
       <div className="room-content-grid">
         <div className="actions-panel panel">
-          {mySeat && (
+          {room.settings.gameId === "othello" ? (
+            <OthelloPanel room={room} me={me} onMove={playOthello} onRestart={restartOthello} />
+          ) : mySeat && (
             <div className="move-panel">
               <div>
                 <h3>请选择出拳</h3>
@@ -1185,7 +1250,7 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
             </div>
           )}
           {canGoSpectate && <button onClick={() => act("room:spectate")}><Eye size={16} /> 去观战席</button>}
-          {room.phase === "punishment" && (
+          {room.settings.gameId === "rps" && room.phase === "punishment" && (
             <div className="punish-box">
               <div className="punish-head">
                 <span>🎲 惩罚阶段</span>
@@ -1330,6 +1395,73 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
   );
 }
 
+function OthelloScore({ room }: { room: RoomSnapshot }) {
+  const state = room.othello;
+  if (!state) return <p className="settlement-placeholder">等待双方坐满</p>;
+  return (
+    <div className="othello-score-mini">
+      <span>⚫ {state.blackCount}</span>
+      <span>⚪ {state.whiteCount}</span>
+      {room.settings.enableRanked && state.rankedDelta && <span className="othello-live-rank">黑 {state.rankedDelta.A >= 0 ? "+" : ""}{state.rankedDelta.A} / 白 {state.rankedDelta.B >= 0 ? "+" : ""}{state.rankedDelta.B}</span>}
+      <strong>{state.ended ? room.resultText || "对局结束" : `轮到玩家 ${state.turn}`}</strong>
+    </div>
+  );
+}
+
+function OthelloPanel({ room, me, onMove, onRestart }: { room: RoomSnapshot; me: PublicPlayer; onMove: (row: number, col: number) => void; onRestart: () => void }) {
+  const state = room.othello;
+  const mySeat = room.seats.A?.id === me.id ? "A" : room.seats.B?.id === me.id ? "B" : null;
+  const isMyTurn = Boolean(state && mySeat && state.turn === mySeat && room.phase === "choosing" && !state.ended);
+  const legalKeys = new Set((state?.legalMoves || []).map((move) => `${move.row}-${move.col}`));
+  const turnName = state?.turn === "A" ? occupantDisplay(room.seats.A) : occupantDisplay(room.seats.B);
+  return (
+    <div className="othello-panel">
+      <div className="othello-head">
+        <div>
+          <h3>⚫⚪ 黑白棋</h3>
+          <p className="hint">{!state ? "等待两个战斗席坐满后开始。" : state.ended ? room.resultText || "对局结束" : isMyTurn ? "轮到你落子。" : `轮到 ${turnName} 落子。`}</p>
+        </div>
+        {state && (
+          <div className="othello-turn-card">
+            <span>{state.turn === "A" ? "⚫ 黑棋" : "⚪ 白棋"}</span>
+            <strong>{state.blackCount} : {state.whiteCount}</strong>
+            {room.settings.enableRanked && state.rankedDelta && <small>本局排位：黑 {state.rankedDelta.A >= 0 ? "+" : ""}{state.rankedDelta.A} / 白 {state.rankedDelta.B >= 0 ? "+" : ""}{state.rankedDelta.B}</small>}
+          </div>
+        )}
+      </div>
+      {state?.ended && mySeat && <button className="primary othello-restart-button" onClick={onRestart}>再来一局</button>}
+      <div className="othello-board" role="grid" aria-label="黑白棋棋盘">
+        {(state?.board || Array.from({ length: 8 }, () => Array.from({ length: 8 }, () => null))).map((row, rowIndex) => row.map((cell, colIndex) => {
+          const legal = legalKeys.has(`${rowIndex}-${colIndex}`);
+          return (
+            <button
+              type="button"
+              className={`othello-cell ${cell || ""} ${legal ? "legal" : ""}`}
+              key={`${rowIndex}-${colIndex}`}
+              disabled={!isMyTurn || !legal}
+              onClick={() => onMove(rowIndex, colIndex)}
+              aria-label={`第 ${rowIndex + 1} 行第 ${colIndex + 1} 列`}
+            >
+              {cell && <span className={`othello-disc ${cell}`} />}
+              {!cell && legal && <span className="othello-legal-dot" />}
+            </button>
+          );
+        }))}
+      </div>
+      <div className="othello-legend">
+        <span>玩家 A：⚫ 黑棋先手</span>
+        <span>玩家 B：⚪ 白棋</span>
+        <span>{mySeat ? `你在战斗席 ${mySeat}` : "你正在观战"}</span>
+      </div>
+    </div>
+  );
+}
+
+function occupantDisplay(occupant: SeatOccupant) {
+  if (!occupant) return "空位";
+  return "isBot" in occupant ? occupant.name : displayPlayerName(occupant);
+}
+
 function RoundHistoryCard({ item, onOpenImage }: { item: RoomSnapshot["roundHistory"][number]; onOpenImage: (imageUrl: string) => void }) {
   const proofByPlayer = new Map(item.proofs.map((proof) => [proof.playerId, proof]));
   const taskPlayerIds = new Set(item.punishmentTasks.map((task) => task.playerId));
@@ -1342,7 +1474,8 @@ function RoundHistoryCard({ item, onOpenImage }: { item: RoomSnapshot["roundHist
           <small>{new Date(item.at).toLocaleTimeString()}</small>
         </div>
         <div className="history-tags">
-          {item.ranked && <em>🏆 {item.stake}分{item.rankMultiplier && item.rankMultiplier > 1 ? ` ×${item.rankMultiplier}` : ""}</em>}
+          {item.gameId === "othello" && <em>⚫⚪ 黑白棋</em>}
+          {item.ranked && <em>🏆 {item.gameId === "othello" ? `${item.stake}分/子${item.rankMultiplier && item.rankMultiplier > 1 ? ` ×${item.rankMultiplier}` : ""}` : `${item.stake}分${item.rankMultiplier && item.rankMultiplier > 1 ? ` ×${item.rankMultiplier}` : ""}`}</em>}
           {item.extremeRanked && <em>⚡ 极限</em>}
           {item.punishedNames.length > 0 && <em>🎲 惩罚</em>}
         </div>
@@ -1350,15 +1483,15 @@ function RoundHistoryCard({ item, onOpenImage }: { item: RoomSnapshot["roundHist
       <div className="history-duel">
         <div className="history-side">
           <span>{item.playerA}</span>
-          <strong>{choiceText(item.moveA)}</strong>
+          <strong>{item.gameId === "othello" ? "⚫ 黑棋" : choiceText(item.moveA)}</strong>
         </div>
         <div className="history-result">
-          <small>VS</small>
+          <small>{item.gameId === "othello" && item.othelloScore ? `${item.othelloScore.black} : ${item.othelloScore.white}` : "VS"}</small>
           <b>{item.resultLabel || historyResultText(item.result)}</b>
         </div>
         <div className="history-side">
           <span>{item.playerB}</span>
-          <strong>{choiceText(item.moveB)}</strong>
+          <strong>{item.gameId === "othello" ? "⚪ 白棋" : choiceText(item.moveB)}</strong>
         </div>
       </div>
       {item.punishedNames.length > 0 && (
@@ -1540,6 +1673,7 @@ function SeatView({ seat, room, me, now, onSit }: { seat: SeatKey; room: RoomSna
   const choice = room.revealedChoices?.[seat] || (occupant?.id === me.id ? room.choices[seat] : room.choices[seat] ? "hidden" : undefined);
   const stats = room.seatStats[seat];
   const battleSeatBlocked = Boolean(room.settings.enableRanked && Boolean(me.extremeModeEnabled) !== Boolean(room.settings.enableExtremeRanked));
+  const othelloTurn = room.settings.gameId === "othello" && room.othello?.turn === seat && room.phase === "choosing" && !room.othello.ended;
   return (
     <div className={`seat-card seat-${seat.toLowerCase()}`}>
       <div className="seat-identity">
@@ -1547,7 +1681,11 @@ function SeatView({ seat, room, me, now, onSit }: { seat: SeatKey; room: RoomSna
         {occupant ? <strong>{"isBot" in occupant ? `🤖 ${occupant.name}` : <PlayerBadge player={occupant} compact />}</strong> : <button disabled={battleSeatBlocked} title={battleSeatBlocked ? "当前排位类型不匹配，只能观战" : "坐到战斗席"} onClick={onSit}>{battleSeatBlocked ? "👀 只能观战" : "🪑 坐下"}</button>}
       </div>
       {occupant && !("isBot" in occupant) && <OfflineBadge player={occupant} now={now} />}
-      <p className="choice-badge">{choice ? choiceText(choice) : room.seats.A && room.seats.B ? "🤔 等待出拳" : "⏳ 等人"}</p>
+      <p className="choice-badge">
+        {room.settings.gameId === "othello"
+          ? seat === "A" ? othelloTurn ? "⚫ 黑棋落子中" : "⚫ 黑棋" : othelloTurn ? "⚪ 白棋落子中" : "⚪ 白棋"
+          : choice ? choiceText(choice) : room.seats.A && room.seats.B ? "🤔 等待出拳" : "⏳ 等人"}
+      </p>
       {occupant && !("isBot" in occupant) && <SeatStatsView stats={stats} />}
     </div>
   );
@@ -1587,7 +1725,8 @@ function punishmentInfoTag(config: AppConfig, room: RoomSnapshot) {
   return roomInfoTag(config, "punishment", punishmentSelectionText(config, room.settings));
 }
 
-function rankedInfoExtra(stake: number, multiplier = 1) {
+function rankedInfoExtra(stake: number, multiplier = 1, gameId: RoomSettings["gameId"] = "rps") {
+  if (gameId === "othello") return multiplier > 1 ? ` ${stake} 分/子 ×${multiplier}` : ` ${stake} 分/子`;
   return multiplier > 1 ? ` ${stake} 分 ×${multiplier}` : ` ${stake} 分`;
 }
 
@@ -1595,8 +1734,9 @@ function roomInfoTags(config: AppConfig, room: RoomSnapshot) {
   const phaseKey = room.phase === "ready" ? "phaseReady" : room.phase === "choosing" ? "phaseChoosing" : room.phase === "result" ? "phaseResult" : room.phase === "punishment" ? "phasePunishment" : "phaseReady";
   const multiplier = rankMultiplierForSettings(room.settings);
   const tags: RoomInfoTagView[] = [
+    gameInfoTag(config, room.settings.gameId),
     roomInfoTag(config, phaseKey),
-    room.settings.enableRanked ? roomInfoTag(config, "ranked", rankedInfoExtra(room.settings.stake, multiplier)) : roomInfoTag(config, "normal"),
+    room.settings.enableRanked ? roomInfoTag(config, "ranked", rankedInfoExtra(room.settings.stake, multiplier, room.settings.gameId)) : roomInfoTag(config, "normal"),
     punishmentInfoTag(config, room)
   ];
   if (room.settings.enableExtremeRanked) tags.push(roomInfoTag(config, "extremeRanked"));
@@ -1611,7 +1751,8 @@ function roomInfoTags(config: AppConfig, room: RoomSnapshot) {
 function lobbyRoomInfoTags(config: AppConfig, room: LobbySnapshot["rooms"][number]) {
   const multiplier = room.rankMultiplier || 1;
   const tags: RoomInfoTagView[] = [
-    room.enableRanked ? roomInfoTag(config, "ranked", rankedInfoExtra(room.stake, multiplier)) : roomInfoTag(config, "normal"),
+    gameInfoTag(config, room.gameId),
+    room.enableRanked ? roomInfoTag(config, "ranked", rankedInfoExtra(room.stake, multiplier, room.gameId)) : roomInfoTag(config, "normal"),
     room.enablePunishment ? roomInfoTag(config, "punishment", punishmentSelectionText(config, room)) : roomInfoTag(config, "noPunishment")
   ];
   if (room.enableExtremeRanked) tags.push(roomInfoTag(config, "extremeRanked"));
@@ -1625,6 +1766,17 @@ function lobbyRoomInfoTags(config: AppConfig, room: LobbySnapshot["rooms"][numbe
     style: { label: "", textColor: "#4d5c6f", backgroundColor: "#eef3f8", borderColor: "#c9d6e4" }
   });
   return tags;
+}
+
+function gameInfoTag(config: AppConfig, gameId: RoomSettings["gameId"]) {
+  const game = config.games.find((item) => item.id === gameId);
+  return {
+    key: `game-${gameId}`,
+    text: gameId === "othello" ? `⚫⚪ ${game?.name || "黑白棋"}` : game?.name || "锤子剪刀布",
+    style: gameId === "othello"
+      ? { label: "黑白棋", textColor: "#163c32", backgroundColor: "#dff7ec", borderColor: "#93d8b8" }
+      : { label: "锤子剪刀布", textColor: "#4d5c6f", backgroundColor: "#eef3f8", borderColor: "#c9d6e4" }
+  };
 }
 
 function punishmentSelectionText(config: AppConfig, settings: Pick<RoomSettings, "punishmentId" | "punishmentIds">) {
@@ -1686,7 +1838,7 @@ function Leaderboard({ title, players }: { title: string; players: PublicPlayer[
   );
 }
 
-type GlobalLeaderboardTab = "positive" | "negative" | "extremePositive" | "extremeNegative" | "nameWar" | "giveaway";
+type GlobalLeaderboardTab = "positive" | "negative" | "extremePositive" | "extremeNegative" | "nameWar" | "giveaway" | "othelloWins" | "othelloCaptured" | "othelloLost";
 
 function GlobalLeaderboardPanel({ players, onClose }: { players: PublicPlayer[]; onClose: () => void }) {
   const [tab, setTab] = useState<GlobalLeaderboardTab>("positive");
@@ -1713,7 +1865,13 @@ function GlobalLeaderboardPanel({ players, onClose }: { players: PublicPlayer[];
           ? "极限负分榜"
           : tab === "nameWar"
             ? "名字争夺战榜"
-            : "白给榜";
+            : tab === "giveaway"
+              ? "白给榜"
+              : tab === "othelloWins"
+                ? "黑白棋胜场榜"
+                : tab === "othelloCaptured"
+                  ? "黑白棋吃子榜"
+                  : "黑白棋被吃榜";
   return (
     <div className="modal-backdrop leaderboard-backdrop" onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section className="leaderboard-modal">
@@ -1731,6 +1889,9 @@ function GlobalLeaderboardPanel({ players, onClose }: { players: PublicPlayer[];
           <button className={tab === "extremeNegative" ? "active" : ""} onClick={() => setTab("extremeNegative")}>极限负</button>
           <button className={tab === "nameWar" ? "active" : ""} onClick={() => setTab("nameWar")}>名争</button>
           <button className={tab === "giveaway" ? "active" : ""} onClick={() => setTab("giveaway")}>白给</button>
+          <button className={tab === "othelloWins" ? "active" : ""} onClick={() => setTab("othelloWins")}>黑白胜</button>
+          <button className={tab === "othelloCaptured" ? "active" : ""} onClick={() => setTab("othelloCaptured")}>吃子</button>
+          <button className={tab === "othelloLost" ? "active" : ""} onClick={() => setTab("othelloLost")}>被吃</button>
         </div>
         <div className="global-leaderboard-list">
           <h3>{title}</h3>
@@ -1742,10 +1903,21 @@ function GlobalLeaderboardPanel({ players, onClose }: { players: PublicPlayer[];
                 <span className={`online-dot ${player.connected ? "online" : "offline"}`}>{player.connected ? "在线" : "离线"}</span>
               </div>
               <div className="global-rank-stats">
-                <span>{player.stats.rankedPoints} 分</span>
-                <span>{player.stats.wins}胜 {player.stats.losses}负 {player.stats.draws}平</span>
-                <span>{player.stats.punishments} 惩罚</span>
-                <span>胜率 {winRateText(player)}</span>
+                {isOthelloLeaderboardTab(tab) ? (
+                  <>
+                    <span>{player.othelloStats.wins}胜 {player.othelloStats.losses}负 {player.othelloStats.draws}平</span>
+                    <span>吃 {player.othelloStats.captured}</span>
+                    <span>被吃 {player.othelloStats.lost}</span>
+                    <span>净值 {player.othelloStats.captured - player.othelloStats.lost}</span>
+                  </>
+                ) : (
+                  <>
+                    <span>{player.stats.rankedPoints} 分</span>
+                    <span>{player.stats.wins}胜 {player.stats.losses}负 {player.stats.draws}平</span>
+                    <span>{player.stats.punishments} 惩罚</span>
+                    <span>胜率 {winRateText(player)}</span>
+                  </>
+                )}
               </div>
               <LeaderboardExtra player={player} tab={tab} now={now} />
             </article>
@@ -1768,12 +1940,38 @@ function leaderboardPlayers(players: PublicPlayer[], tab: GlobalLeaderboardTab) 
       .filter((player) => player.nameWarEnabled || player.nameWarPunished)
       .sort((a, b) => Number(Boolean(b.nameWarPunished)) - Number(Boolean(a.nameWarPunished)) || a.stats.rankedPoints - b.stats.rankedPoints);
   }
+  if (tab === "othelloWins") {
+    return copy
+      .filter((player) => player.othelloStats.games > 0)
+      .sort((a, b) => b.othelloStats.wins - a.othelloStats.wins || b.othelloStats.captured - a.othelloStats.captured);
+  }
+  if (tab === "othelloCaptured") {
+    return copy
+      .filter((player) => player.othelloStats.captured > 0 || player.othelloStats.games > 0)
+      .sort((a, b) => b.othelloStats.captured - a.othelloStats.captured || b.othelloStats.wins - a.othelloStats.wins);
+  }
+  if (tab === "othelloLost") {
+    return copy
+      .filter((player) => player.othelloStats.lost > 0 || player.othelloStats.games > 0)
+      .sort((a, b) => b.othelloStats.lost - a.othelloStats.lost || b.othelloStats.losses - a.othelloStats.losses);
+  }
   return copy
     .filter((player) => player.giveawayEnabled || (player.giveawayValue || 0) > 0)
     .sort((a, b) => (b.giveawayValue || 0) - (a.giveawayValue || 0) || b.stats.rankedPoints - a.stats.rankedPoints);
 }
 
+function isOthelloLeaderboardTab(tab: GlobalLeaderboardTab) {
+  return tab === "othelloWins" || tab === "othelloCaptured" || tab === "othelloLost";
+}
+
 function LeaderboardExtra({ player, tab, now }: { player: PublicPlayer; tab: GlobalLeaderboardTab; now: number }) {
+  if (isOthelloLeaderboardTab(tab)) {
+    return (
+      <p className="global-rank-extra">
+        ⚫⚪ 黑白棋 {player.othelloStats.games} 局 · 净吃子 {player.othelloStats.captured - player.othelloStats.lost}
+      </p>
+    );
+  }
   if (tab === "nameWar") {
     const protectedMs = player.nameWarRenameProtectedUntil ? Math.max(0, player.nameWarRenameProtectedUntil - now) : 0;
     return (
@@ -2052,7 +2250,7 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
       return;
     }
     if (extremeCannotClose) {
-      onError("只有正分玩家可以关闭极限模式");
+      onError("排位分必须大于 0 才能关闭极限模式，0 分不能关闭");
       return;
     }
     if (!me.extremeModeEnabled && extremeModeEnabled) {
@@ -2144,7 +2342,7 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
             <p className="hint">正分输分和负分加分会按段位折扣；整点会自动扣分，离线也会扣。</p>
             <p className="hint">极限排位连胜达到 {config.extremeMode.winStreakThreshold} 局后，每次继续获胜都有 {Math.round(config.extremeMode.winStreakCrashChance * 100)}% 几率额外扣 {config.extremeMode.crashTargetPoints} 分。</p>
             {me.stats.rankedPoints < 0 && !me.extremeModeEnabled && <p className="hint danger-hint">你当前是负分，不能开启极限模式。</p>}
-            {extremeCannotClose && <p className="hint danger-hint">只有正分玩家可以关闭极限模式。</p>}
+            {extremeCannotClose && <p className="hint danger-hint">排位分必须大于 0 才能关闭极限模式，0 分不能关闭。</p>}
             {extremeCooldownMs > 0 && <p className="hint">关闭后冷却：约 {extremeCooldownHours} 小时后可重新开启。</p>}
           </div>
           <div className="profile-action-row">
@@ -2956,6 +3154,14 @@ function AdminPanel({ config, lobby, onBack, onError }: { config: AppConfig; lob
                   <button onClick={() => action("clearRoomChat", { roomId: room.id })}>清空房间聊天</button>
                   <button onClick={() => action("forceNext", { roomId: room.id })}>强制下一局</button>
                 </div>
+                {room.gameId === "othello" && (
+                  <div className="admin-action-row othello-admin-actions">
+                    <button onClick={() => action("forceOthelloRestart", { roomId: room.id })}>黑白棋重开</button>
+                    <button onClick={() => action("forceOthelloEnd", { roomId: room.id, othelloResult: "A" })}>判黑方胜</button>
+                    <button onClick={() => action("forceOthelloEnd", { roomId: room.id, othelloResult: "B" })}>判白方胜</button>
+                    <button onClick={() => action("forceOthelloEnd", { roomId: room.id, othelloResult: "draw" })}>判平局</button>
+                  </div>
+                )}
               </div>
             ))}
             {lobby.rooms.length === 0 && <p className="empty">暂无房间</p>}
