@@ -627,6 +627,8 @@ main {
 
 .compact-title {
   align-items: center;
+  flex-direction: row;
+  min-height: auto;
 }
 
 .compact-title h2 {
@@ -634,13 +636,19 @@ main {
 }
 
 .compact-title span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  white-space: nowrap;
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 4px 9px;
+  padding: 3px 8px;
   background: var(--panel-soft);
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
+  line-height: 1;
 }
 
 .giveaway-submit {
@@ -3386,6 +3394,12 @@ main {
   .room-card {
     flex-direction: column;
     min-height: 122px;
+  }
+
+  .panel-title.compact-title {
+    flex-direction: row;
+    align-items: center;
+    min-height: 0;
   }
 
   .room-card {
