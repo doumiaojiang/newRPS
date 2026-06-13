@@ -231,6 +231,10 @@ function clampGiveawayValue(value: number) {
   return Math.max(0, Math.min(100, Math.round(value * 10) / 10));
 }
 
+function currentExtremeDecayHour(now = Date.now()) {
+  return Math.floor(now / 3_600_000);
+}
+
 function seatOf(room: RoomState, playerId: string): SeatKey | null {
   if (room.seats.A?.id === playerId) return "A";
   if (room.seats.B?.id === playerId) return "B";
@@ -554,6 +558,7 @@ function lobbySnapshot(options: { includeConfig?: boolean } = {}) {
       stake: room.settings.stake,
       enableRankMultiplier: room.settings.enableRankMultiplier,
       rankMultiplier: rankMultiplierFor(room.settings),
+      enableExtremeRanked: room.settings.enableExtremeRanked,
       tags: room.settings.enableTags ? room.settings.tags || [] : []
     })),
     normalLeaderboard,
@@ -700,6 +705,9 @@ function createPlayer(name: string, genderId: string, token?: string): PlayerSta
     giveawayVoteLikesThisHour: 0,
     giveawayVoteDislikesThisHour: 0,
     rankMultiplierUnlocked: false,
+    extremeModeEnabled: false,
+    extremeWinStreak: 0,
+    extremeLastDecayHour: currentExtremeDecayHour(),
     token: token || randomId(),
     stats: { wins: 0, losses: 0, draws: 0, punishments: 0, rankedPoints: 0, title, titleSegmentId: titleSegment?.id },
     recentMoves: []
@@ -730,14 +738,46 @@ function effectiveRankedStake(settings: RoomSettings) {
   return settings.stake * rankMultiplierFor(settings);
 }
 
+function extremeSegmentId(points: number) {
+  if (points >= 750) return "pos4";
+  if (points >= 500) return "pos3";
+  if (points >= 250) return "pos2";
+  if (points >= 1) return "pos1";
+  if (points <= -750) return "neg4";
+  if (points <= -500) return "neg3";
+  if (points <= -250) return "neg2";
+  if (points <= -1) return "neg1";
+  return "pos0";
+}
+
+function adjustedRankedDelta(player: PlayerState | undefined, delta: number) {
+  if (!player || !player.extremeModeEnabled || delta === 0) return Math.round(delta);
+  const segment = extremeSegmentId(player.stats.rankedPoints);
+  if (delta < 0 && player.stats.rankedPoints > 0) {
+    const rate = config.extremeMode.positiveLossRates[segment] ?? 1;
+    return -Math.round(Math.abs(delta) * rate);
+  }
+  if (delta > 0 && player.stats.rankedPoints < 0) {
+    const rate = config.extremeMode.negativeWinRates[segment] ?? (segment === "neg4" ? 0.5 : 1);
+    return Math.round(delta * rate);
+  }
+  return Math.round(delta);
+}
+
 function applyRankedStake(winner: PlayerState | undefined, loser: PlayerState | undefined, stake: number) {
-  if (winner) updateRankedPoints(winner, stake);
-  if (loser) updateRankedPoints(loser, -stake);
+  const winnerDelta = adjustedRankedDelta(winner, stake);
+  const loserDelta = adjustedRankedDelta(loser, -stake);
+  if (winner) updateRankedPoints(winner, winnerDelta);
+  if (loser) updateRankedPoints(loser, loserDelta);
+  return { winnerDelta, loserDelta };
 }
 
 function applyRankedDrawPenaltyStake(playerA: PlayerState | undefined, playerB: PlayerState | undefined, stake: number) {
-  if (playerA) updateRankedPoints(playerA, -stake);
-  if (playerB) updateRankedPoints(playerB, -stake);
+  const deltaA = adjustedRankedDelta(playerA, -stake);
+  const deltaB = adjustedRankedDelta(playerB, -stake);
+  if (playerA) updateRankedPoints(playerA, deltaA);
+  if (playerB) updateRankedPoints(playerB, deltaB);
+  return { deltaA, deltaB };
 }
 
 function createDisconnectForfeit(room: RoomState, player: PlayerState) {
@@ -772,14 +812,15 @@ function applyDisconnectForfeit(room: RoomState, player: PlayerState) {
   room.disconnectForfeits.delete(player.id);
   const winner = players.get(forfeit.winnerId);
   const loser = players.get(forfeit.loserId);
+  const rankedResult = applyRankedStake(winner, loser, forfeit.stake);
   if (winner) {
     winner.stats.wins += 1;
-    updateRankedPoints(winner, forfeit.stake);
   }
   if (loser) {
     loser.stats.losses += 1;
-    updateRankedPoints(loser, -forfeit.stake);
   }
+  resetExtremeWinStreak(loser);
+  const streakText = applyExtremeWinStreakRisk(room, winner);
   room.score[forfeit.winnerSeat] += 1;
   room.seatedScore[forfeit.winnerSeat] += 1;
   room.seatStats[forfeit.winnerSeat].wins += 1;
@@ -788,7 +829,7 @@ function applyDisconnectForfeit(room: RoomState, player: PlayerState) {
   room.status = "playing";
   room.revealedChoices = undefined;
   const stakeText = forfeit.rankMultiplier > 1 ? `${forfeit.baseStake} 分 ×${forfeit.rankMultiplier} = ${forfeit.stake} 分` : `${forfeit.stake} 分`;
-  room.resultText = `${forfeit.loserName} 断线超时判负，${forfeit.winnerName}胜利，排位 ${stakeText} 已结算`;
+  room.resultText = `${forfeit.loserName} 断线超时判负，${forfeit.winnerName}胜利，排位 ${stakeText} 已结算（${forfeit.winnerName} ${rankedResult.winnerDelta >= 0 ? "+" : ""}${rankedResult.winnerDelta}，${forfeit.loserName} ${rankedResult.loserDelta}）${streakText}`;
   addRoundHistory(room, {
     id: randomId(),
     round: room.roundHistory.length + 1,
@@ -804,6 +845,7 @@ function applyDisconnectForfeit(room: RoomState, player: PlayerState) {
     stake: forfeit.baseStake,
     rankMultiplier: forfeit.rankMultiplier,
     effectiveStake: forfeit.stake,
+    extremeRanked: Boolean(room.settings.enableExtremeRanked),
     punishmentTasks: [],
     punishedNames: [],
     proofs: []
@@ -823,6 +865,56 @@ function setRankedPointsByAdmin(player: PlayerState, points: number) {
   const minPoints = player.nameWarEnabled ? -1999 : -999;
   player.stats.rankedPoints = clamp(Math.round(points), minPoints, 999);
   refreshNameWarState(player);
+}
+
+function extremeHourlyDecayAmount(player: PlayerState) {
+  const segment = extremeSegmentId(player.stats.rankedPoints);
+  const amount = config.extremeMode.hourlyDecay[segment] ?? config.extremeMode.hourlyDecay.default ?? 2;
+  return Math.max(0, Math.round(amount));
+}
+
+function applyExtremeHourlyDecay(now = Date.now()) {
+  const hour = currentExtremeDecayHour(now);
+  const changedRoomIds = new Set<string>();
+  let changed = false;
+  for (const player of players.values()) {
+    if (!player.extremeModeEnabled) continue;
+    if (player.extremeLastDecayHour === hour) continue;
+    player.extremeLastDecayHour = hour;
+    const amount = extremeHourlyDecayAmount(player);
+    if (amount <= 0) continue;
+    updateRankedPoints(player, -amount);
+    changed = true;
+    if (player.roomId) changedRoomIds.add(player.roomId);
+  }
+  if (!changed) return;
+  for (const roomId of changedRoomIds) broadcastRoom(roomId);
+  broadcastLobby();
+}
+
+function scheduleExtremeHourlyDecay() {
+  const now = Date.now();
+  const nextHour = (currentExtremeDecayHour(now) + 1) * 3_600_000;
+  setTimeout(() => {
+    applyExtremeHourlyDecay();
+    setInterval(() => applyExtremeHourlyDecay(), 3_600_000);
+  }, Math.max(1_000, nextHour - now + 500));
+}
+
+function resetExtremeWinStreak(player: PlayerState | undefined) {
+  if (player?.extremeModeEnabled) player.extremeWinStreak = 0;
+}
+
+function applyExtremeWinStreakRisk(room: RoomState, winner: PlayerState | undefined) {
+  if (!winner?.extremeModeEnabled || !room.settings.enableRanked) return "";
+  winner.extremeWinStreak = (winner.extremeWinStreak || 0) + 1;
+  const threshold = config.extremeMode.winStreakThreshold;
+  if (winner.extremeWinStreak < threshold) return "";
+  if (Math.random() >= config.extremeMode.winStreakCrashChance) return "";
+  const target = config.extremeMode.crashTargetPoints;
+  setRankedPointsByAdmin(winner, target);
+  refreshPlayerSnapshots(winner);
+  return `；${playerShortName(winner)} 极限连胜触发风险，积分变为 ${winner.stats.rankedPoints}`;
 }
 
 function nameWarRenameQuota(player: PlayerState, now = Date.now()) {
@@ -1017,18 +1109,22 @@ function finishRoundIfReady(room: RoomState) {
     if (playerB) playerB.stats.losses += 1;
     room.seatStats.A.losses += 1;
     room.seatStats.B.losses += 1;
-    if (room.settings.enableRanked) applyRankedDrawPenaltyStake(playerA, playerB, rankedStake);
+    resetExtremeWinStreak(playerA);
+    resetExtremeWinStreak(playerB);
+    const rankedPenalty = room.settings.enableRanked ? applyRankedDrawPenaltyStake(playerA, playerB, rankedStake) : undefined;
     room.resultText = room.settings.enableRanked
-      ? `双方白给，双输：双方各扣 ${rankedStake} 分`
+      ? `双方白给，双输：A ${rankedPenalty?.deltaA || 0} 分，B ${rankedPenalty?.deltaB || 0} 分`
       : "双方白给，双输";
   } else if (result === "draw") {
     if (playerA) playerA.stats.draws += 1;
     if (playerB) playerB.stats.draws += 1;
     room.seatStats.A.draws += 1;
     room.seatStats.B.draws += 1;
+    resetExtremeWinStreak(playerA);
+    resetExtremeWinStreak(playerB);
     if (room.settings.enableRanked && room.settings.tieDoublePunish) {
-      applyRankedDrawPenaltyStake(playerA, playerB, rankedStake);
-      room.resultText = `平局双罚：双方都出了 ${moveText(finalChoices.A)}，双方各扣 ${rankedStake} 分`;
+      const rankedPenalty = applyRankedDrawPenaltyStake(playerA, playerB, rankedStake);
+      room.resultText = `平局双罚：双方都出了 ${moveText(finalChoices.A)}，A ${rankedPenalty.deltaA} 分，B ${rankedPenalty.deltaB} 分`;
     } else {
       room.resultText = `平局：双方都出了 ${moveText(finalChoices.A)}`;
     }
@@ -1044,10 +1140,17 @@ function finishRoundIfReady(room: RoomState) {
     room.seatedScore[winnerSeat] += 1;
     room.seatStats[winnerSeat].wins += 1;
     room.seatStats[loserSeat].losses += 1;
-    if (room.settings.enableRanked) applyRankedStake(winner, loser, rankedStake);
+    let streakText = "";
+    let rankedText = "";
+    if (room.settings.enableRanked) {
+      const rankedResult = applyRankedStake(winner, loser, rankedStake);
+      resetExtremeWinStreak(loser);
+      streakText = applyExtremeWinStreakRisk(room, winner);
+      rankedText = `（${occupantName(room.seats[winnerSeat])} ${rankedResult.winnerDelta >= 0 ? "+" : ""}${rankedResult.winnerDelta}，${occupantName(room.seats[loserSeat])} ${rankedResult.loserDelta}）`;
+    }
     room.resultText = giveawayText
-      ? `${giveawayText}，${occupantName(room.seats[winnerSeat])}胜利`
-      : `${winnerSeat} 获胜：A 出 ${moveText(finalChoices.A)}，B 出 ${moveText(finalChoices.B)}`;
+      ? `${giveawayText}，${occupantName(room.seats[winnerSeat])}胜利${rankedText}${streakText}`
+      : `${occupantName(room.seats[winnerSeat])}胜利${rankedText}${streakText}`;
   }
 
   addRoundHistory(room, {
@@ -1065,6 +1168,7 @@ function finishRoundIfReady(room: RoomState) {
     stake: room.settings.enableRanked ? room.settings.stake : undefined,
     rankMultiplier: room.settings.enableRanked ? rankedMultiplier : undefined,
     effectiveStake: room.settings.enableRanked ? rankedStake : undefined,
+    extremeRanked: Boolean(room.settings.enableExtremeRanked),
     punishmentName: punishedNames.length ? punishmentNameForRoom(room, punishment) : undefined,
     punishmentDescription: punishedNames.length && room.settings.punishmentSource !== "player" ? punishment?.description : undefined,
     punishmentTasks,
@@ -1566,7 +1670,7 @@ io.on("connection", (socket) => {
     broadcastLobby();
   });
 
-  socket.on("player:updateProfile", ({ name, genderId, nameWarEnabled, nameWarAllowRename, giveawayEnabled }: { name: string; genderId: string; nameWarEnabled?: boolean; nameWarAllowRename?: boolean; giveawayEnabled?: boolean }, reply) => {
+  socket.on("player:updateProfile", ({ name, genderId, nameWarEnabled, nameWarAllowRename, giveawayEnabled, extremeModeEnabled }: { name: string; genderId: string; nameWarEnabled?: boolean; nameWarAllowRename?: boolean; giveawayEnabled?: boolean; extremeModeEnabled?: boolean }, reply) => {
     const player = getPlayer(socket.id);
     if (!player) return reply?.({ error: "请先进入大厅" });
     const cleanName = String(name || "").trim().slice(0, 12);
@@ -1579,6 +1683,8 @@ io.on("connection", (socket) => {
     const nameWarChanged = nextNameWarEnabled !== Boolean(player.nameWarEnabled);
     const allowRenameChanged = nextAllowRename !== Boolean(player.nameWarAllowRename);
     const nextGiveawayEnabled = Boolean(giveawayEnabled);
+    const nextExtremeModeEnabled = Boolean(extremeModeEnabled);
+    const extremeModeChanged = nextExtremeModeEnabled !== Boolean(player.extremeModeEnabled);
     // 名字会出现在大厅、排行榜、房间座位和聊天里，所以只给“改名”做冷却；
     // 性别标签允许随时调整，避免玩家只是换阵营标签也被卡住。
     if (nameChanged && (player.nameWarEnabled || nextNameWarEnabled)) {
@@ -1594,6 +1700,16 @@ io.on("connection", (socket) => {
     }
     if (player.giveawayEnabled && !nextGiveawayEnabled && (player.giveawayValue || 0) > 0) {
       return reply?.({ error: "白给值归零前不能关闭白给模式" });
+    }
+    if (extremeModeChanged && nextExtremeModeEnabled) {
+      if (player.extremeModeCooldownUntil && player.extremeModeCooldownUntil > now) {
+        const hours = Math.ceil((player.extremeModeCooldownUntil - now) / 3_600_000);
+        return reply?.({ error: `极限模式冷却中，请 ${hours} 小时后再开启` });
+      }
+      if (player.stats.rankedPoints < 0) return reply?.({ error: "负分玩家不能开启极限模式" });
+    }
+    if (extremeModeChanged && !nextExtremeModeEnabled && player.stats.rankedPoints <= 0) {
+      return reply?.({ error: "只有正分玩家可以关闭极限模式" });
     }
 
     if (nameChanged) {
@@ -1619,6 +1735,18 @@ io.on("connection", (socket) => {
       player.giveawayBoardText = undefined;
       player.giveawayBoardSubmittedAt = undefined;
       player.giveawayBoardExpiresAt = undefined;
+    }
+    if (extremeModeChanged) {
+      player.extremeModeEnabled = nextExtremeModeEnabled;
+      player.extremeModeToggledAt = now;
+      player.extremeWinStreak = 0;
+      if (nextExtremeModeEnabled) {
+        player.stats.rankedPoints = 0;
+        player.extremeLastDecayHour = currentExtremeDecayHour(now);
+        syncTitleForRankSegment(player);
+      } else {
+        player.extremeModeCooldownUntil = now + config.extremeMode.cooldownHours * 3_600_000;
+      }
     }
     if (nameChanged) player.profileUpdatedAt = now;
     player.displayName = formatDisplayName(player);
@@ -1704,6 +1832,7 @@ io.on("connection", (socket) => {
   socket.on("rankMultiplier:unlock", (_payload, reply) => {
     const player = getPlayer(socket.id);
     if (!player) return reply?.({ error: "请先进入游戏" });
+    if (player.extremeModeEnabled) return reply?.({ error: "极限模式玩家不能解锁倍率模式" });
     if (player.rankMultiplierUnlocked) return reply?.({ player: publicPlayer(player) });
     if (player.stats.rankedPoints < 200) return reply?.({ error: "需要至少 200 排位积分才能解锁倍率模式" });
     updateRankedPoints(player, -200);
@@ -1779,9 +1908,15 @@ io.on("connection", (socket) => {
       enableRankMultiplier: Boolean(settings.enableRanked && settings.enableRankMultiplier),
       rankMultiplier: settings.enableRankMultiplier && ([2, 5, 10] as RankMultiplier[]).includes(settings.rankMultiplier as RankMultiplier)
         ? settings.rankMultiplier as RankMultiplier
-        : 1
+        : 1,
+      enableExtremeRanked: Boolean(settings.enableRanked && settings.enableExtremeRanked)
     };
     if (!normalizedSettings.enableRanked) {
+      normalizedSettings.enableRankMultiplier = false;
+      normalizedSettings.rankMultiplier = 1;
+      normalizedSettings.enableExtremeRanked = false;
+    }
+    if (normalizedSettings.enableExtremeRanked) {
       normalizedSettings.enableRankMultiplier = false;
       normalizedSettings.rankMultiplier = 1;
     }
@@ -1799,6 +1934,15 @@ io.on("connection", (socket) => {
     normalizedSettings.roomBackgroundImage = randomRoomBackground(normalizedSettings);
     if (normalizedSettings.enableRanked && normalizedSettings.enableBot) {
       return reply?.({ error: "排位战不能开启 Bot" });
+    }
+    if (normalizedSettings.enableRanked && player.extremeModeEnabled !== Boolean(normalizedSettings.enableExtremeRanked)) {
+      return reply?.({ error: player.extremeModeEnabled ? "极限模式玩家只能创建极限排位房" : "只有极限模式玩家可以创建极限排位房" });
+    }
+    if (normalizedSettings.enableExtremeRanked && normalizedSettings.enableBot) {
+      return reply?.({ error: "极限排位不能开启 Bot" });
+    }
+    if (normalizedSettings.enableExtremeRanked && normalizedSettings.enableRankMultiplier) {
+      return reply?.({ error: "极限排位不能开启倍率模式" });
     }
     if (normalizedSettings.enableRankMultiplier && !player.rankMultiplierUnlocked) {
       return reply?.({ error: "请先提交 200 排位积分解锁倍率模式" });
@@ -1845,6 +1989,12 @@ io.on("connection", (socket) => {
     const room = rooms.get(roomId);
     if (!player || !room) return reply?.({ error: "房间不存在" });
     if (room.settings.password && room.settings.password !== password) return reply?.({ error: config.messages.passwordWrong });
+    if (room.settings.enableRanked && player.extremeModeEnabled !== Boolean(room.settings.enableExtremeRanked)) {
+      return reply?.({ error: player.extremeModeEnabled ? "极限模式玩家不能进入普通排位房" : "非极限模式玩家不能进入极限排位房" });
+    }
+    if (player.extremeModeEnabled && rankMultiplierFor(room.settings) > 1) {
+      return reply?.({ error: "极限模式玩家不能进入倍率房" });
+    }
     const leaveResult = leaveRoom(player, "switchRoom");
     if (!leaveResult.ok) return reply?.({ error: leaveResult.error });
     player.roomId = room.id;
@@ -2250,5 +2400,6 @@ io.on("connection", (socket) => {
 const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || "127.0.0.1";
 server.listen(port, host, () => {
+  scheduleExtremeHourlyDecay();
   console.log(`RPS Online server listening on http://${host}:${port}`);
 });

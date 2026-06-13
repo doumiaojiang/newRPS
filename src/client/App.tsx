@@ -1569,16 +1569,19 @@ function punishmentInfoTag(config: AppConfig, room: RoomSnapshot) {
   return roomInfoTag(config, "punishment", punishmentSelectionText(config, room.settings));
 }
 
+function rankedInfoExtra(stake: number, multiplier = 1) {
+  return multiplier > 1 ? ` ${stake} 分 ×${multiplier}` : ` ${stake} 分`;
+}
+
 function roomInfoTags(config: AppConfig, room: RoomSnapshot) {
   const phaseKey = room.phase === "ready" ? "phaseReady" : room.phase === "choosing" ? "phaseChoosing" : room.phase === "result" ? "phaseResult" : room.phase === "punishment" ? "phasePunishment" : "phaseReady";
+  const multiplier = rankMultiplierForSettings(room.settings);
   const tags: RoomInfoTagView[] = [
     roomInfoTag(config, phaseKey),
-    room.settings.enableRanked ? roomInfoTag(config, "ranked", ` ${room.settings.stake} 分`) : roomInfoTag(config, "normal"),
+    room.settings.enableRanked ? roomInfoTag(config, "ranked", rankedInfoExtra(room.settings.stake, multiplier)) : roomInfoTag(config, "normal"),
     punishmentInfoTag(config, room)
   ];
   if (room.settings.enableExtremeRanked) tags.push(roomInfoTag(config, "extremeRanked"));
-  const multiplier = rankMultiplierForSettings(room.settings);
-  if (multiplier > 1) tags.push(roomInfoTag(config, "ranked", ` 倍率 x${multiplier}`));
   if (room.settings.enablePunishment) {
     if (room.settings.tieDoublePunish) tags.push(roomInfoTag(config, "tieDoublePunish"));
     if (room.settings.requireOpponentConfirm) tags.push(roomInfoTag(config, "requireOpponentConfirm"));
@@ -1588,12 +1591,12 @@ function roomInfoTags(config: AppConfig, room: RoomSnapshot) {
 }
 
 function lobbyRoomInfoTags(config: AppConfig, room: LobbySnapshot["rooms"][number]) {
+  const multiplier = room.rankMultiplier || 1;
   const tags: RoomInfoTagView[] = [
-    room.enableRanked ? roomInfoTag(config, "ranked") : roomInfoTag(config, "normal"),
+    room.enableRanked ? roomInfoTag(config, "ranked", rankedInfoExtra(room.stake, multiplier)) : roomInfoTag(config, "normal"),
     room.enablePunishment ? roomInfoTag(config, "punishment", punishmentSelectionText(config, room)) : roomInfoTag(config, "noPunishment")
   ];
   if (room.enableExtremeRanked) tags.push(roomInfoTag(config, "extremeRanked"));
-  if (room.enableRanked && (room.rankMultiplier || 1) > 1) tags.push(roomInfoTag(config, "ranked", ` 倍率 x${room.rankMultiplier}`));
   if (room.enablePunishment) {
     if (room.tieDoublePunish) tags.push(roomInfoTag(config, "tieDoublePunish"));
     if (room.requireOpponentConfirm) tags.push(roomInfoTag(config, "requireOpponentConfirm"));

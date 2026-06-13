@@ -83,6 +83,11 @@ export type PublicPlayer = {
   giveawayVoteLikesThisHour?: number;
   giveawayVoteDislikesThisHour?: number;
   rankMultiplierUnlocked?: boolean;
+  extremeModeEnabled?: boolean;
+  extremeModeToggledAt?: number;
+  extremeModeCooldownUntil?: number;
+  extremeWinStreak?: number;
+  extremeLastDecayHour?: number;
   roomId?: string;
   isAdmin?: boolean;
   stats: PublicStats;
@@ -140,6 +145,7 @@ export type RoomSettings = {
   stake: 5 | 10 | 20;
   enableRankMultiplier?: boolean;
   rankMultiplier?: RankMultiplier;
+  enableExtremeRanked?: boolean;
 };
 
 export type PunishmentProof = {
@@ -178,6 +184,7 @@ export type RoundHistoryItem = {
   stake?: 5 | 10 | 20;
   rankMultiplier?: RankMultiplier;
   effectiveStake?: number;
+  extremeRanked?: boolean;
   punishmentName?: string;
   punishmentDescription?: string;
   punishmentTasks: Array<{
@@ -272,6 +279,7 @@ export type LobbySnapshot = {
     stake: 5 | 10 | 20;
     enableRankMultiplier?: boolean;
     rankMultiplier?: RankMultiplier;
+    enableExtremeRanked?: boolean;
     tags?: string[];
   }>;
   normalLeaderboard: PublicPlayer[];
@@ -324,6 +332,17 @@ export type AppConfig = {
     panelDescription: string;
     submitPlaceholder: string;
     emptyText: string;
+  };
+  extremeMode: {
+    label: string;
+    emoji: string;
+    cooldownHours: number;
+    positiveLossRates: Record<string, number>;
+    negativeWinRates: Record<string, number>;
+    hourlyDecay: Record<string, number>;
+    winStreakThreshold: number;
+    winStreakCrashChance: number;
+    crashTargetPoints: number;
   };
   bots: {
     names: string[];

@@ -80,6 +80,17 @@ const defaultGiveaway = {
   submitPlaceholder: "写下你的自我惩罚宣言...",
   emptyText: "还没有人在白给自救板上。"
 };
+const defaultExtremeMode: AppConfig["extremeMode"] = {
+  label: "极限模式",
+  emoji: "⚡",
+  cooldownHours: 12,
+  positiveLossRates: { pos1: 0.9, pos2: 0.75, pos3: 0.6, pos4: 0.5 },
+  negativeWinRates: { neg1: 0.9, neg2: 0.75, neg3: 0.6, neg4: 0.5 },
+  hourlyDecay: { pos4: 10, pos3: 6, pos2: 4, pos1: 2, default: 2 },
+  winStreakThreshold: 10,
+  winStreakCrashChance: 0.5,
+  crashTargetPoints: -999
+};
 const defaultAccessControl = { maxOnlinePerIp: 3, maxCreatesPer10Min: 5 };
 const defaultRoomInfoTags: Record<string, RoomInfoTagStyle> = {
   phaseReady: { label: "等待坐满", textColor: "#225c8d", backgroundColor: "#e5f5ff", borderColor: "#9ed7ff" },
@@ -93,7 +104,8 @@ const defaultRoomInfoTags: Record<string, RoomInfoTagStyle> = {
   tieDoublePunish: { label: "平局双罚", textColor: "#7b3a22", backgroundColor: "#ffe8dc", borderColor: "#ffb894" },
   requireOpponentConfirm: { label: "需要对手确认", textColor: "#225c8d", backgroundColor: "#e1f2ff", borderColor: "#8fcaf0" },
   allowProofImage: { label: "允许图片证明", textColor: "#326749", backgroundColor: "#e3f8ec", borderColor: "#9ed9b8" },
-  textProofOnly: { label: "仅文字证明", textColor: "#5c5570", backgroundColor: "#f0edf8", borderColor: "#c8bedf" }
+  textProofOnly: { label: "仅文字证明", textColor: "#5c5570", backgroundColor: "#f0edf8", borderColor: "#c8bedf" },
+  extremeRanked: { label: "极限排位", textColor: "#7c3d00", backgroundColor: "#fff1d8", borderColor: "#ffbf75" }
 };
 
 function readJson(filePath: string): AppConfig {
@@ -169,6 +181,7 @@ function normalizeConfig(input: AppConfig): AppConfig {
       submitPlaceholder: String(input.giveaway?.submitPlaceholder || defaultGiveaway.submitPlaceholder).trim().slice(0, 60) || defaultGiveaway.submitPlaceholder,
       emptyText: String(input.giveaway?.emptyText || defaultGiveaway.emptyText).trim().slice(0, 60) || defaultGiveaway.emptyText
     },
+    extremeMode: normalizeExtremeMode(input.extremeMode),
     playerPunishmentRoomNamePool: normalizeRoomNamePool(input.playerPunishmentRoomNamePool, defaultPlayerPunishmentRoomNamePool)
   };
 }
@@ -218,6 +231,33 @@ function clampOpacity(value: unknown) {
   const numberValue = Number(value);
   if (!Number.isFinite(numberValue)) return 0.26;
   return Math.max(0, Math.min(1, numberValue));
+}
+
+function clampRatio(value: unknown, fallback: number) {
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue)) return fallback;
+  return Math.max(0, Math.min(1, numberValue));
+}
+
+function normalizeNumberRecord(input: Record<string, unknown> | undefined, fallback: Record<string, number>, min: number, max: number) {
+  return Object.fromEntries(Object.entries(fallback).map(([key, fallbackValue]) => {
+    const numberValue = Number(input?.[key]);
+    return [key, Number.isFinite(numberValue) ? Math.max(min, Math.min(max, numberValue)) : fallbackValue];
+  }));
+}
+
+function normalizeExtremeMode(input?: Partial<AppConfig["extremeMode"]>): AppConfig["extremeMode"] {
+  return {
+    label: String(input?.label || defaultExtremeMode.label).trim().slice(0, 16) || defaultExtremeMode.label,
+    emoji: String(input?.emoji || defaultExtremeMode.emoji).trim().slice(0, 4) || defaultExtremeMode.emoji,
+    cooldownHours: clampNumber(input?.cooldownHours, 1, 168, defaultExtremeMode.cooldownHours),
+    positiveLossRates: normalizeNumberRecord(input?.positiveLossRates, defaultExtremeMode.positiveLossRates, 0, 1),
+    negativeWinRates: normalizeNumberRecord(input?.negativeWinRates, defaultExtremeMode.negativeWinRates, 0, 1),
+    hourlyDecay: normalizeNumberRecord(input?.hourlyDecay, defaultExtremeMode.hourlyDecay, 0, 999),
+    winStreakThreshold: clampNumber(input?.winStreakThreshold, 1, 100, defaultExtremeMode.winStreakThreshold),
+    winStreakCrashChance: clampRatio(input?.winStreakCrashChance, defaultExtremeMode.winStreakCrashChance),
+    crashTargetPoints: clampNumber(input?.crashTargetPoints, -1999, 999, defaultExtremeMode.crashTargetPoints)
+  };
 }
 
 function isBotStrategy(value: unknown): value is NonNullable<AppConfig["bots"]["difficulties"][number]["strategy"]> {
@@ -338,6 +378,20 @@ export function validateConfig(input: AppConfig) {
   if (!input.giveaway?.panelDescription?.trim()) throw new Error("白给模式说明不能为空");
   if (!input.giveaway?.submitPlaceholder?.trim()) throw new Error("白给模式输入提示不能为空");
   if (!input.giveaway?.emptyText?.trim()) throw new Error("白给模式空状态文案不能为空");
+  if (!input.extremeMode?.label?.trim()) throw new Error("极限模式名称不能为空");
+  if (!input.extremeMode?.emoji?.trim()) throw new Error("极限模式标志不能为空");
+  if (!Number.isFinite(input.extremeMode.cooldownHours) || input.extremeMode.cooldownHours < 1) throw new Error("极限模式冷却小时数至少为 1");
+  for (const [key, value] of Object.entries(input.extremeMode.positiveLossRates)) {
+    if (!Number.isFinite(value) || value < 0 || value > 1) throw new Error(`极限模式 ${key} 掉分比例必须在 0 到 1 之间`);
+  }
+  for (const [key, value] of Object.entries(input.extremeMode.negativeWinRates)) {
+    if (!Number.isFinite(value) || value < 0 || value > 1) throw new Error(`极限模式 ${key} 加分比例必须在 0 到 1 之间`);
+  }
+  for (const [key, value] of Object.entries(input.extremeMode.hourlyDecay)) {
+    if (!Number.isFinite(value) || value < 0) throw new Error(`极限模式 ${key} 整点扣分不能小于 0`);
+  }
+  if (!Number.isFinite(input.extremeMode.winStreakThreshold) || input.extremeMode.winStreakThreshold < 1) throw new Error("极限模式连胜阈值至少为 1");
+  if (!Number.isFinite(input.extremeMode.winStreakCrashChance) || input.extremeMode.winStreakCrashChance < 0 || input.extremeMode.winStreakCrashChance > 1) throw new Error("极限模式爆分概率必须在 0 到 1 之间");
   if (!Number.isFinite(input.accessControl?.maxOnlinePerIp) || input.accessControl.maxOnlinePerIp < 1) throw new Error("同 IP 在线人数限制至少为 1");
   if (!Number.isFinite(input.accessControl?.maxCreatesPer10Min) || input.accessControl.maxCreatesPer10Min < 1) throw new Error("同 IP 10 分钟新建玩家限制至少为 1");
   if (!input.bots?.names?.length || !input.bots?.difficulties?.length) throw new Error("bot 名字和难度不能为空");

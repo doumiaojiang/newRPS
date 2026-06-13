@@ -94,6 +94,17 @@
     "submitPlaceholder": "写下你的自我惩罚宣言...",
     "emptyText": "还没有人在白给自救板上。"
   },
+  "extremeMode": {
+    "label": "极限模式",
+    "emoji": "⚡",
+    "cooldownHours": 12,
+    "positiveLossRates": { "pos1": 0.9, "pos2": 0.75, "pos3": 0.6, "pos4": 0.5 },
+    "negativeWinRates": { "neg1": 0.9, "neg2": 0.75, "neg3": 0.6, "neg4": 0.5 },
+    "hourlyDecay": { "pos4": 10, "pos3": 6, "pos2": 4, "pos1": 2, "default": 2 },
+    "winStreakThreshold": 10,
+    "winStreakCrashChance": 0.5,
+    "crashTargetPoints": -999
+  },
   "bots": {
     "names": ["Bot 小蓝", "Bot 小粉", "随机拳机", "布布机器人"],
     "difficulties": [
