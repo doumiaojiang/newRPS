@@ -2,8 +2,10 @@ import express from "express";
 import http from "node:http";
 import path from "node:path";
 import fs from "node:fs";
+import crypto from "node:crypto";
+import helmet from "helmet";
 import multer from "multer";
-import { Server } from "socket.io";
+import { Server, type Socket } from "socket.io";
 import { fileURLToPath } from "node:url";
 import { exportConfigText, getRootDir, loadConfig, resetConfig, saveConfig } from "./config.js";
 import type {
@@ -62,6 +64,8 @@ type RoomState = Omit<RoomSnapshot, "spectators" | "seats" | "roundHistoryTotal"
 
 type LeaveReason = "manual" | "switchRoom" | "spectate" | "disconnectTimeout" | "adminKick";
 type LeaveResult = { ok: true } | { ok: false; error: string };
+type SessionPayload = { sid: string; exp: number };
+type RateLimitOptions = { limit: number; windowMs: number; cooldownMs?: number };
 
 const defaultRoomName = "新的锤子剪刀布房间";
 
@@ -76,6 +80,10 @@ fs.mkdirSync(adminUploadsDir, { recursive: true });
 let config: AppConfig = loadConfig();
 const players = new Map<string, PlayerState>();
 const tokenToPlayerId = new Map<string, string>();
+const sidToSocketId = new Map<string, string>();
+const socketIdToSid = new Map<string, string>();
+const socketIdsByIp = new Map<string, Set<string>>();
+const rateBuckets = new Map<string, { hits: number[]; cooldownUntil?: number }>();
 const rooms = new Map<string, RoomState>();
 const botTimers = new Map<string, NodeJS.Timeout>();
 const ipCreateAttempts = new Map<string, number[]>();
@@ -105,13 +113,171 @@ const serverStats = {
 
 const app = express();
 const server = http.createServer(app);
+const isProduction = process.env.NODE_ENV === "production";
+const sessionSecret = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
+const sessionTtlMs = Math.max(5 * 60_000, Number(process.env.SESSION_TTL_MS) || 24 * 60 * 60_000);
+const allowedOrigins = parseAllowedOrigins();
+const maxSocketsPerIp = Math.max(1, Number(process.env.MAX_SOCKETS_PER_IP) || Math.max(5, config.accessControl.maxOnlinePerIp * 2));
 const io = new Server(server, {
-  cors: { origin: true },
+  cors: { origin: corsOrigin },
   pingInterval: 25_000,
   pingTimeout: 30_000
 });
 
+app.disable("x-powered-by");
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginResourcePolicy: { policy: "same-origin" }
+}));
+app.use((req, res, next) => {
+  if (req.path.startsWith("/api/") && !originAllowed(req.headers.origin)) {
+    securityLog("http_origin_blocked", { ip: requestIp(req), path: req.path, origin: req.headers.origin, userAgent: req.headers["user-agent"] });
+    return res.status(403).json({ message: "Origin not allowed" });
+  }
+  next();
+});
 app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: false, limit: "256kb" }));
+
+function parseAllowedOrigins() {
+  const configured = [
+    ...(process.env.CORS_ORIGINS || "").split(","),
+    process.env.PUBLIC_ORIGIN || ""
+  ].map((origin) => origin.trim()).filter(Boolean);
+  if (configured.includes("*") && isProduction) {
+    throw new Error("CORS_ORIGINS must not contain * in production");
+  }
+  return new Set(configured);
+}
+
+function isLocalDevOrigin(origin: string) {
+  try {
+    const url = new URL(origin);
+    return ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function originAllowed(origin?: string) {
+  if (!origin) return true;
+  if (allowedOrigins.has(origin)) return true;
+  return !isProduction && isLocalDevOrigin(origin);
+}
+
+function corsOrigin(origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) {
+  if (originAllowed(origin)) return callback(null, true);
+  securityLog("origin_blocked", { ip: "unknown", origin });
+  return callback(new Error("Origin not allowed"), false);
+}
+
+function requestIp(req: express.Request) {
+  const forwarded = req.headers["x-forwarded-for"];
+  const raw = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+  return String(raw?.split(",")[0] || req.socket.remoteAddress || "unknown").trim();
+}
+
+function securityLog(event: string, details: Record<string, unknown> = {}) {
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    event,
+    ...details
+  }));
+}
+
+function hmac(input: string) {
+  return crypto.createHmac("sha256", sessionSecret).update(input).digest("base64url");
+}
+
+function signSession(payload: SessionPayload) {
+  const body = `${payload.sid}.${payload.exp}`;
+  return `${body}.${hmac(body)}`;
+}
+
+function issueSessionToken() {
+  return signSession({
+    sid: crypto.randomBytes(16).toString("hex"),
+    exp: Date.now() + sessionTtlMs
+  });
+}
+
+function verifySessionToken(token: unknown): SessionPayload | null {
+  const value = String(token || "");
+  const parts = value.split(".");
+  if (parts.length !== 3) return null;
+  const [sid, rawExp, signature] = parts;
+  if (!/^[a-f0-9]{32}$/.test(sid)) return null;
+  const exp = Number(rawExp);
+  if (!Number.isFinite(exp) || exp <= Date.now()) return null;
+  const expected = hmac(`${sid}.${rawExp}`);
+  const actualBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (actualBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(actualBuffer, expectedBuffer)) return null;
+  return { sid, exp };
+}
+
+function checkRateLimit(key: string, options: RateLimitOptions) {
+  const now = Date.now();
+  const bucket = rateBuckets.get(key) || { hits: [] };
+  if (bucket.cooldownUntil && bucket.cooldownUntil > now) {
+    rateBuckets.set(key, bucket);
+    return false;
+  }
+  bucket.hits = bucket.hits.filter((time) => now - time < options.windowMs);
+  if (bucket.hits.length >= options.limit) {
+    bucket.cooldownUntil = now + (options.cooldownMs || options.windowMs);
+    bucket.hits = [];
+    rateBuckets.set(key, bucket);
+    return false;
+  }
+  bucket.hits.push(now);
+  bucket.cooldownUntil = undefined;
+  rateBuckets.set(key, bucket);
+  return true;
+}
+
+function rateLimitKey(event: string, ipAddress: string, sid?: string) {
+  return `${event}:${ipAddress}:${sid || "anonymous"}`;
+}
+
+function socketSession(socket: { data: Record<string, unknown> }) {
+  return {
+    sid: String(socket.data.sid || ""),
+    ipAddress: String(socket.data.ipAddress || "unknown")
+  };
+}
+
+function guardedOn<T>(
+  socket: Socket,
+  event: string,
+  options: RateLimitOptions,
+  handler: (payload: T, reply?: (response: unknown) => void) => void
+) {
+  socket.on(event, (payload: T, reply?: (response: unknown) => void) => {
+    const { sid, ipAddress } = socketSession(socket);
+    if (!checkRateLimit(rateLimitKey(event, ipAddress, sid), options)) {
+      securityLog("rate_limit", { sid, ip: ipAddress, event, userAgent: socket.handshake.headers["user-agent"] });
+      return reply?.({ error: "操作过于频繁，请稍后再试" });
+    }
+    handler(payload, reply);
+  });
+}
+
+app.post("/api/session", (req, res) => {
+  const ipAddress = requestIp(req);
+  if (!originAllowed(req.headers.origin)) {
+    securityLog("session_origin_blocked", { ip: ipAddress, origin: req.headers.origin, userAgent: req.headers["user-agent"] });
+    return res.status(403).json({ message: "Origin not allowed" });
+  }
+  if (!checkRateLimit(`session:${ipAddress}`, { limit: 10, windowMs: 60_000, cooldownMs: 60_000 })) {
+    securityLog("token_issue_limited", { ip: ipAddress, userAgent: req.headers["user-agent"] });
+    return res.status(429).json({ message: "请求过于频繁，请稍后再试" });
+  }
+  const token = issueSessionToken();
+  const payload = verifySessionToken(token);
+  securityLog("token_issued", { sid: payload?.sid, ip: ipAddress, userAgent: req.headers["user-agent"] });
+  res.json({ token, expiresAt: payload?.exp });
+});
 app.use("/uploads", express.static(uploadsDir, {
   dotfiles: "deny",
   index: false,
@@ -153,8 +319,14 @@ const imageUpload = multer({
 app.post("/api/proof-image", (req, res) => {
   imageUpload.single("image")(req, res, (error) => {
     if (error) return res.status(400).json({ message: "图片上传失败，请确认格式为 jpg/png/webp 且小于 8MB" });
-    const playerId = tokenToPlayerId.get(String(req.body.token || ""));
+    const token = String(req.body.token || "");
+    const session = verifySessionToken(token);
+    const playerId = session ? tokenToPlayerId.get(token) : undefined;
     const player = playerId ? players.get(playerId) : undefined;
+    if (!session || player?.id !== session.sid) {
+      securityLog("upload_denied", { sid: session?.sid, ip: requestIp(req), event: "proof-image", userAgent: req.headers["user-agent"] });
+      return res.status(403).json({ message: "Invalid session" });
+    }
     if (!player?.connected) return res.status(403).json({ message: "请先进入游戏后再上传证明" });
     if (!req.file) return res.status(400).json({ message: "图片格式不支持或图片为空" });
     try {
@@ -187,14 +359,19 @@ if (fs.existsSync(path.join(rootDir, "dist"))) {
   app.use((_req, res) => res.sendFile(path.join(rootDir, "dist", "index.html")));
 }
 
+app.use((error: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  securityLog("http_error", { ip: requestIp(req), path: req.path, message: error.message, userAgent: req.headers["user-agent"] });
+  res.status(500).json(isProduction ? { message: "Internal server error" } : { message: error.message, stack: error.stack });
+});
+
 function randomId() {
-  return Math.random().toString(36).slice(2, 10);
+  return crypto.randomBytes(6).toString("base64url");
 }
 
 function roomCode() {
   let code = "";
   do {
-    code = `DM-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    code = `DM-${crypto.randomBytes(3).toString("hex").slice(0, 4).toUpperCase()}`;
   } while ([...rooms.values()].some((room) => room.code === code));
   return code;
 }
@@ -693,8 +870,7 @@ function makeBot(difficulty: BotDifficulty): BotPlayer {
   };
 }
 
-function createPlayer(name: string, genderId: string, token?: string): PlayerState {
-  const playerId = randomId();
+function createPlayer(name: string, genderId: string, token: string, playerId: string): PlayerState {
   const gender = genderInfo(genderId);
   const titleSegment = titleSegmentFor(0);
   const title = randomTitleFromSegment(titleSegment, gender.factionId);
@@ -721,7 +897,7 @@ function createPlayer(name: string, genderId: string, token?: string): PlayerSta
     extremeModeEnabled: false,
     extremeWinStreak: 0,
     extremeLastDecayHour: currentExtremeDecayHour(),
-    token: token || randomId(),
+    token,
     stats: { wins: 0, losses: 0, draws: 0, punishments: 0, rankedPoints: 0, title, titleSegmentId: titleSegment?.id },
     recentMoves: []
   };
@@ -1257,9 +1433,17 @@ function generatedRoomName(settings: RoomSettings) {
 }
 
 function normalizeRoomName(settings: RoomSettings) {
-  const cleanName = String(settings.name || "").trim().slice(0, 24);
+  const cleanName = sanitizeUserText(settings.name, 24);
   if (!cleanName || cleanName === defaultRoomName) return generatedRoomName(settings);
   return cleanName;
+}
+
+function sanitizeUserText(value: unknown, maxLength: number) {
+  return String(value || "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
 }
 
 function uniqueRoomName(baseName: string) {
@@ -1615,16 +1799,52 @@ function leaveRoom(player: PlayerState, reason: LeaveReason = "manual"): LeaveRe
   return { ok: true };
 }
 
+io.use((socket, next) => {
+  const token = String(socket.handshake.auth?.token || socket.handshake.query?.token || "");
+  const session = verifySessionToken(token);
+  const ipAddress = socketIp(socket);
+  const userAgent = socket.handshake.headers["user-agent"];
+  if (!session) {
+    securityLog("socket_auth_failed", { ip: ipAddress, userAgent });
+    return next(new Error("Invalid session"));
+  }
+
+  const socketsForIp = socketIdsByIp.get(ipAddress) || new Set<string>();
+  if (!socketsForIp.has(socket.id) && socketsForIp.size >= maxSocketsPerIp) {
+    securityLog("socket_ip_limited", { sid: session.sid, ip: ipAddress, userAgent });
+    return next(new Error("Too many connections"));
+  }
+
+  const previousSocketId = sidToSocketId.get(session.sid);
+  if (previousSocketId && previousSocketId !== socket.id) {
+    securityLog("socket_duplicate", { sid: session.sid, ip: ipAddress, oldSocketId: previousSocketId, userAgent });
+    io.sockets.sockets.get(previousSocketId)?.disconnect(true);
+  }
+
+  socket.data.sid = session.sid;
+  socket.data.token = token;
+  socket.data.sessionExpiresAt = session.exp;
+  socket.data.ipAddress = ipAddress;
+  sidToSocketId.set(session.sid, socket.id);
+  socketIdToSid.set(socket.id, session.sid);
+  socketsForIp.add(socket.id);
+  socketIdsByIp.set(ipAddress, socketsForIp);
+  securityLog("socket_connected", { sid: session.sid, ip: ipAddress, socketId: socket.id, userAgent });
+  next();
+});
+
 io.on("connection", (socket) => {
   socket.emit("config:update", config);
   socket.emit("lobby:update", lobbySnapshot({ includeConfig: true }));
 
-  socket.on("player:join", ({ name, genderId, token }: { name: string; genderId: string; token?: string }, reply) => {
-    const cleanName = String(name || "").trim().slice(0, 12);
+  guardedOn(socket, "player:join", { limit: 8, windowMs: 60_000, cooldownMs: 60_000 }, ({ name, genderId }: { name: string; genderId: string; token?: string }, reply) => {
+    const cleanName = sanitizeUserText(name, 12);
     if (cleanName.length < 2) return reply?.({ error: config.messages.nameRequired });
 
-    const ipAddress = socketIp(socket);
-    let player = token ? players.get(tokenToPlayerId.get(token) || "") : undefined;
+    const token = String(socket.data.token || "");
+    const sid = String(socket.data.sid || "");
+    const ipAddress = String(socket.data.ipAddress || socketIp(socket));
+    let player = players.get(sid);
     if (!player) {
       if (onlinePlayersFromIp(ipAddress) >= config.accessControl.maxOnlinePerIp) {
         return reply?.({ error: `当前网络下在线人数过多，最多允许 ${config.accessControl.maxOnlinePerIp} 人同时在线` });
@@ -1632,7 +1852,8 @@ io.on("connection", (socket) => {
       if (!canCreateFromIp(ipAddress)) {
         return reply?.({ error: `当前网络 10 分钟内新建玩家过多，最多允许 ${config.accessControl.maxCreatesPer10Min} 次` });
       }
-      player = createPlayer(cleanName, genderId, token);
+      player = createPlayer(cleanName, genderId, token, sid);
+      securityLog("player_created", { sid, ip: ipAddress, userAgent: socket.handshake.headers["user-agent"] });
     }
     const wasDisconnected = !player.connected;
     const hadDisconnectHold = Boolean(player.disconnectExpiresAt);
@@ -1675,7 +1896,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("admin:login", ({ password }: { password: string }, reply) => {
+  guardedOn(socket, "admin:login", { limit: 5, windowMs: 60_000, cooldownMs: 60_000 }, ({ password }: { password: string }, reply) => {
     const player = getPlayer(socket.id);
     if (!adminPasswordMatches(password)) return reply?.({ error: "管理员口令不正确或尚未设置" });
     adminSocketIds.add(socket.id);
@@ -1684,10 +1905,10 @@ io.on("connection", (socket) => {
     broadcastLobby();
   });
 
-  socket.on("player:updateProfile", ({ name, genderId, nameWarEnabled, nameWarAllowRename, giveawayEnabled, extremeModeEnabled }: { name: string; genderId: string; nameWarEnabled?: boolean; nameWarAllowRename?: boolean; giveawayEnabled?: boolean; extremeModeEnabled?: boolean }, reply) => {
+  guardedOn(socket, "player:updateProfile", { limit: 10, windowMs: 60_000, cooldownMs: 30_000 }, ({ name, genderId, nameWarEnabled, nameWarAllowRename, giveawayEnabled, extremeModeEnabled }: { name: string; genderId: string; nameWarEnabled?: boolean; nameWarAllowRename?: boolean; giveawayEnabled?: boolean; extremeModeEnabled?: boolean }, reply) => {
     const player = getPlayer(socket.id);
     if (!player) return reply?.({ error: "请先进入大厅" });
-    const cleanName = String(name || "").trim().slice(0, 12);
+    const cleanName = sanitizeUserText(name, 12);
     if (cleanName.length < 2) return reply?.({ error: config.messages.nameRequired });
 
     const now = Date.now();
@@ -1770,7 +1991,7 @@ io.on("connection", (socket) => {
     if (player.roomId) broadcastRoom(player.roomId);
   });
 
-  socket.on("giveaway:boost", (_payload, reply) => {
+  guardedOn(socket, "giveaway:boost", { limit: 20, windowMs: 60_000, cooldownMs: 30_000 }, (_payload, reply) => {
     const player = getPlayer(socket.id);
     const room = player?.roomId ? rooms.get(player.roomId) : undefined;
     if (!player || !room) return reply?.({ error: "你不在房间中" });
@@ -1785,11 +2006,11 @@ io.on("connection", (socket) => {
     broadcastRoom(room.id);
   });
 
-  socket.on("giveaway:submitBoard", ({ text }: { text: string }, reply) => {
+  guardedOn(socket, "giveaway:submitBoard", { limit: 4, windowMs: 60_000, cooldownMs: 60_000 }, ({ text }: { text: string }, reply) => {
     const player = getPlayer(socket.id);
     if (!player) return reply?.({ error: "请先进入游戏" });
     if (!player.giveawayEnabled || (player.giveawayValue || 0) <= 0) return reply?.({ error: "白给值大于 0% 时才能上板自救" });
-    const cleanText = String(text || "").trim().slice(0, 300);
+    const cleanText = sanitizeUserText(text, 300);
     if (cleanText.length < 2) return reply?.({ error: "自我惩罚宣言至少需要 2 个字" });
     const now = Date.now();
     player.giveawayBoardText = cleanText;
@@ -1803,7 +2024,7 @@ io.on("connection", (socket) => {
     broadcastLobby();
   });
 
-  socket.on("giveaway:vote", ({ targetId, vote }: { targetId: string; vote: "like" | "dislike" }, reply) => {
+  guardedOn(socket, "giveaway:vote", { limit: 30, windowMs: 60_000, cooldownMs: 30_000 }, ({ targetId, vote }: { targetId: string; vote: "like" | "dislike" }, reply) => {
     const actor = getPlayer(socket.id);
     const target = players.get(targetId);
     if (!actor) return reply?.({ error: "请先进入游戏" });
@@ -1843,7 +2064,7 @@ io.on("connection", (socket) => {
     if (actor.roomId && actor.roomId !== target.roomId) broadcastRoom(actor.roomId);
   });
 
-  socket.on("rankMultiplier:unlock", (_payload, reply) => {
+  guardedOn(socket, "rankMultiplier:unlock", { limit: 6, windowMs: 60_000, cooldownMs: 30_000 }, (_payload, reply) => {
     const player = getPlayer(socket.id);
     if (!player) return reply?.({ error: "请先进入游戏" });
     if (player.extremeModeEnabled) return reply?.({ error: "极限模式玩家不能解锁倍率模式" });
@@ -1857,7 +2078,7 @@ io.on("connection", (socket) => {
     if (player.roomId) broadcastRoom(player.roomId);
   });
 
-  socket.on("nameWar:renameTarget", ({ targetId, name }: { targetId: string; name: string }, reply) => {
+  guardedOn(socket, "nameWar:renameTarget", { limit: 8, windowMs: 60_000, cooldownMs: 60_000 }, ({ targetId, name }: { targetId: string; name: string }, reply) => {
     const actor = getPlayer(socket.id);
     const target = players.get(targetId);
     if (!actor) return reply?.({ error: "请先进入游戏" });
@@ -1872,7 +2093,7 @@ io.on("connection", (socket) => {
       return reply?.({ error: `对方正在保护期内，请 ${hours} 小时后再试` });
     }
     if (nameWarRenameQuota(actor, now) <= 0) return reply?.({ error: "你 3 小时内已经修改了 3 个名字" });
-    const cleanName = String(name || "").trim().slice(0, 12);
+    const cleanName = sanitizeUserText(name, 12);
     if (cleanName.length < 2) return reply?.({ error: "新名字至少需要 2 个字" });
     target.nameWarPenaltyName = cleanName;
     target.nameWarPunished = true;
@@ -1889,7 +2110,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("config:get", (_payload, reply) => reply?.({ config }));
-  socket.on("config:save", ({ password, nextConfig }: { password: string; nextConfig: AppConfig }, reply) => {
+  guardedOn(socket, "config:save", { limit: 6, windowMs: 60_000, cooldownMs: 60_000 }, ({ password, nextConfig }: { password: string; nextConfig: AppConfig }, reply) => {
     if (!adminPasswordMatches(password)) return reply?.({ error: "管理员口令不正确或尚未设置" });
     try {
       config = saveConfig(nextConfig);
@@ -1901,7 +2122,7 @@ io.on("connection", (socket) => {
       reply?.({ error: error instanceof Error ? error.message : "配置保存失败" });
     }
   });
-  socket.on("config:reset", ({ password }: { password: string }, reply) => {
+  guardedOn(socket, "config:reset", { limit: 3, windowMs: 60_000, cooldownMs: 60_000 }, ({ password }: { password: string }, reply) => {
     if (!adminPasswordMatches(password)) return reply?.({ error: "管理员口令不正确或尚未设置" });
     config = resetConfig();
     refreshAllPlayersForConfig();
@@ -1910,7 +2131,7 @@ io.on("connection", (socket) => {
     io.emit("config:update", config);
   });
 
-  socket.on("room:create", ({ settings }: { settings: RoomSettings }, reply) => {
+  guardedOn(socket, "room:create", { limit: 5, windowMs: 60_000, cooldownMs: 60_000 }, ({ settings }: { settings: RoomSettings }, reply) => {
     const player = getPlayer(socket.id);
     if (!player) return reply?.({ error: "请先进入大厅" });
     const normalizedSettings: RoomSettings = {
@@ -1993,14 +2214,18 @@ io.on("connection", (socket) => {
     rooms.set(roomId, room);
     player.roomId = roomId;
     socket.join(roomId);
+    securityLog("room_created", { sid: player.id, ip: player.ipAddress, roomId, event: "room:create", userAgent: socket.handshake.headers["user-agent"] });
     roomNotice(room, `${playerShortName(player)} 进入房间，坐在战斗席 A。`);
     reply?.({ room: roomSnapshot(room, { includeChat: true }) });
     broadcastRoom(roomId, true);
   });
 
-  socket.on("room:join", ({ roomId, password }: { roomId: string; password?: string }, reply) => {
+  guardedOn(socket, "room:join", { limit: 12, windowMs: 60_000, cooldownMs: 45_000 }, ({ roomId, password }: { roomId: string; password?: string }, reply) => {
     const player = getPlayer(socket.id);
     const room = rooms.get(roomId);
+    if (player && room && player.roomId === room.id && roomHasPlayer(room, player.id)) {
+      return reply?.({ room: roomSnapshot(room, { includeChat: true }) });
+    }
     if (!player || !room) return reply?.({ error: "房间不存在" });
     if (room.settings.password && room.settings.password !== password) return reply?.({ error: config.messages.passwordWrong });
     const leaveResult = leaveRoom(player, "switchRoom");
@@ -2017,21 +2242,23 @@ io.on("connection", (socket) => {
     }
     else room.spectatorIds.push(player.id);
     socket.join(room.id);
+    securityLog("room_joined", { sid: player.id, ip: player.ipAddress, roomId: room.id, event: "room:join", userAgent: socket.handshake.headers["user-agent"] });
     roomNotice(room, `${playerShortName(player)} 进入房间，位置：${joinRole}。`);
     maybeStartChoosing(room);
     reply?.({ room: roomSnapshot(room, { includeChat: true }) });
     broadcastRoom(room.id, true);
   });
 
-  socket.on("room:leave", (_payload, reply) => {
+  guardedOn(socket, "room:leave", { limit: 12, windowMs: 60_000, cooldownMs: 45_000 }, (_payload, reply) => {
     const player = getPlayer(socket.id);
     if (!player) return;
     const leaveResult = leaveRoom(player, "manual");
     if (!leaveResult.ok) return reply?.({ error: leaveResult.error });
+    securityLog("room_left", { sid: player.id, ip: player.ipAddress, event: "room:leave", userAgent: socket.handshake.headers["user-agent"] });
     reply?.({ ok: true });
   });
 
-  socket.on("room:history", ({ roomId, offset, limit }: { roomId: string; offset?: number; limit?: number }, reply) => {
+  guardedOn(socket, "room:history", { limit: 30, windowMs: 60_000, cooldownMs: 30_000 }, ({ roomId, offset, limit }: { roomId: string; offset?: number; limit?: number }, reply) => {
     const player = getPlayer(socket.id);
     const room = rooms.get(roomId);
     if (!player || !room || player.roomId !== room.id) return reply?.({ error: "你不在这个房间里" });
@@ -2043,7 +2270,7 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("room:sit", ({ seat }: { seat: SeatKey }, reply) => {
+  guardedOn(socket, "room:sit", { limit: 12, windowMs: 60_000, cooldownMs: 30_000 }, ({ seat }: { seat: SeatKey }, reply) => {
     const player = getPlayer(socket.id);
     const room = player?.roomId ? rooms.get(player.roomId) : undefined;
     if (!player || !room) return reply?.({ error: "你不在房间中" });
@@ -2069,7 +2296,7 @@ io.on("connection", (socket) => {
     broadcastRoom(room.id, true);
   });
 
-  socket.on("room:spectate", (_payload, reply) => {
+  guardedOn(socket, "room:spectate", { limit: 12, windowMs: 60_000, cooldownMs: 30_000 }, (_payload, reply) => {
     const player = getPlayer(socket.id);
     const room = player?.roomId ? rooms.get(player.roomId) : undefined;
     if (!player || !room) return reply?.({ error: "你不在房间中" });
@@ -2084,7 +2311,7 @@ io.on("connection", (socket) => {
     if (!cleanupRoomIfEmpty(room)) broadcastRoom(room.id, true);
   });
 
-  socket.on("room:move", ({ move }: { move: Move }, reply) => {
+  guardedOn(socket, "room:move", { limit: 20, windowMs: 10_000, cooldownMs: 20_000 }, ({ move }: { move: Move }, reply) => {
     const player = getPlayer(socket.id);
     const room = player?.roomId ? rooms.get(player.roomId) : undefined;
     if (!player || !room) return reply?.({ error: "你不在房间中" });
@@ -2110,9 +2337,10 @@ io.on("connection", (socket) => {
     broadcastRoom(room.id, oldStatus !== room.status);
   });
 
-  socket.on("punishment:submit", ({ text, imageUrl }: { text: string; imageUrl?: string }, reply) => {
+  guardedOn(socket, "punishment:submit", { limit: 8, windowMs: 60_000, cooldownMs: 60_000 }, ({ text, imageUrl }: { text: string; imageUrl?: string }, reply) => {
     const player = getPlayer(socket.id);
     const room = player?.roomId ? rooms.get(player.roomId) : undefined;
+    const cleanProofText = sanitizeUserText(text, 300);
     if (!player || !room || !room.punishedPlayerIds.includes(player.id)) return reply?.({ error: "你当前不需要提交惩罚" });
     if (!String(text || "").trim()) return reply?.({ error: "请填写文字证明" });
     if (imageUrl && room.settings.allowProofImage === false) return reply?.({ error: "本房间已关闭图片证明" });
@@ -2127,7 +2355,7 @@ io.on("connection", (socket) => {
     room.proofs = room.proofs.filter((proof) => proof.playerId !== player.id);
     room.proofs.push({
       playerId: player.id,
-      text: String(text).trim(),
+      text: cleanProofText,
       imageUrl,
       taskText,
       status: approvedBySystem ? "approved" : "pending",
@@ -2141,7 +2369,7 @@ io.on("connection", (socket) => {
     attachProofToLatestHistory(room, {
       playerId: player.id,
       playerName: playerShortName(player),
-      text: String(text).trim(),
+      text: cleanProofText,
       imageUrl,
       taskText,
       status: approvedBySystem ? "approved" : "pending",
@@ -2154,7 +2382,7 @@ io.on("connection", (socket) => {
     reply?.({ ok: true });
   });
 
-  socket.on("punishment:assignTask", ({ playerId, taskText }: { playerId: string; taskText: string }, reply) => {
+  guardedOn(socket, "punishment:assignTask", { limit: 10, windowMs: 60_000, cooldownMs: 45_000 }, ({ playerId, taskText }: { playerId: string; taskText: string }, reply) => {
     const player = getPlayer(socket.id);
     const room = player?.roomId ? rooms.get(player.roomId) : undefined;
     if (!player || !room) return reply?.({ error: "你不在房间中" });
@@ -2169,14 +2397,14 @@ io.on("connection", (socket) => {
     const expectedAssigner = taskAssigner(room, playerId);
     if (!task || (task.assignedBy || expectedAssigner?.id) !== player.id) return reply?.({ error: "这条任务不由你发布" });
     if (task.taskText.trim()) return reply?.({ error: "任务已经发布" });
-    const cleanTask = String(taskText || "").trim().slice(0, 300);
+    const cleanTask = sanitizeUserText(taskText, 300);
     if (!cleanTask) return reply?.({ error: "请填写惩罚任务" });
     updatePunishmentTask(room, playerId, cleanTask, player);
     broadcastRoom(room.id);
     reply?.({ ok: true });
   });
 
-  socket.on("punishment:review", ({ playerId, action, redoTaskText }: { playerId: string; action: "approve" | "forgive" | "reject"; redoTaskText?: string }, reply) => {
+  guardedOn(socket, "punishment:review", { limit: 15, windowMs: 60_000, cooldownMs: 45_000 }, ({ playerId, action, redoTaskText }: { playerId: string; action: "approve" | "forgive" | "reject"; redoTaskText?: string }, reply) => {
     const player = getPlayer(socket.id);
     const room = player?.roomId ? rooms.get(player.roomId) : undefined;
     if (!player || !room) return reply?.({ error: "你不在房间中" });
@@ -2189,7 +2417,7 @@ io.on("connection", (socket) => {
     if (!proof) return reply?.({ error: "对方还没有提交证明" });
     const reviewedAt = Date.now();
     if (action === "reject") {
-      const cleanTask = String(redoTaskText || "").trim().slice(0, 300);
+      const cleanTask = sanitizeUserText(redoTaskText, 300);
       if (!cleanTask) return reply?.({ error: "请填写新的惩罚任务" });
       proof.status = "rejected";
       proof.reviewedBy = player.id;
@@ -2225,7 +2453,7 @@ io.on("connection", (socket) => {
     reply?.({ ok: true });
   });
 
-  socket.on("punishment:confirm", ({ playerId }: { playerId: string }, reply) => {
+  guardedOn(socket, "punishment:confirm", { limit: 15, windowMs: 60_000, cooldownMs: 45_000 }, ({ playerId }: { playerId: string }, reply) => {
     const player = getPlayer(socket.id);
     const room = player?.roomId ? rooms.get(player.roomId) : undefined;
     if (!player || !room) return reply?.({ error: "你不在房间中" });
@@ -2247,7 +2475,7 @@ io.on("connection", (socket) => {
     reply?.({ ok: true });
   });
 
-  socket.on("chat:send", ({ roomId, text }: { roomId?: string; text: string }, reply) => {
+  guardedOn(socket, "chat:send", { limit: 20, windowMs: 60_000, cooldownMs: 30_000 }, ({ roomId, text }: { roomId?: string; text: string }, reply) => {
     const player = getPlayer(socket.id);
     if (!player) return reply?.({ error: "请先进入游戏" });
     if (!String(text || "").trim()) return reply?.({ error: "请输入聊天内容" });
@@ -2259,7 +2487,7 @@ io.on("connection", (socket) => {
       playerId: player.id,
       author: player.displayName,
       authorPlayer: publicPlayer(player),
-      text: String(text).trim().slice(0, 300),
+      text: sanitizeUserText(text, 300),
       at: Date.now()
     };
     if (roomId) {
@@ -2275,17 +2503,17 @@ io.on("connection", (socket) => {
     reply?.({ ok: true });
   });
 
-  socket.on("suggestion:add", ({ text }: { text: string }, reply) => {
+  guardedOn(socket, "suggestion:add", { limit: 5, windowMs: 60_000, cooldownMs: 60_000 }, ({ text }: { text: string }, reply) => {
     const player = getPlayer(socket.id);
     if (!player) return reply?.({ error: "请先进入游戏" });
     if (!String(text || "").trim()) return reply?.({ error: "请输入留言内容" });
-    const suggestion = { id: randomId(), playerId: player.id, author: player.displayName, authorPlayer: publicPlayer(player), text: String(text).trim().slice(0, 500), at: Date.now() };
+    const suggestion = { id: randomId(), playerId: player.id, author: player.displayName, authorPlayer: publicPlayer(player), text: sanitizeUserText(text, 500), at: Date.now() };
     appendSuggestion(suggestion);
     io.emit("suggestion:append", suggestion);
     reply?.({ ok: true });
   });
 
-  socket.on("admin:action", ({ action, roomId, playerId, name, rankedPoints, title, message, durationSeconds }: { action: string; roomId?: string; playerId?: string; name?: string; rankedPoints?: number | string; title?: string; message?: string; durationSeconds?: number | string }, reply) => {
+  guardedOn(socket, "admin:action", { limit: 30, windowMs: 60_000, cooldownMs: 60_000 }, ({ action, roomId, playerId, name, rankedPoints, title, message, durationSeconds }: { action: string; roomId?: string; playerId?: string; name?: string; rankedPoints?: number | string; title?: string; message?: string; durationSeconds?: number | string }, reply) => {
     const admin = getPlayer(socket.id);
     if (!admin?.isAdmin && !adminSocketIds.has(socket.id)) return reply?.({ error: "需要管理员权限" });
     let roomDeleted = false;
@@ -2293,7 +2521,7 @@ io.on("connection", (socket) => {
     if (action === "clearSuggestions") suggestions.length = 0;
     if (action === "clearLobbyChat") lobbyChat.length = 0;
     if (action === "broadcastAnnouncement") {
-      const cleanMessage = String(message || "").trim().slice(0, 200);
+      const cleanMessage = sanitizeUserText(message, 200);
       if (!cleanMessage) return reply?.({ error: "公告内容不能为空" });
       const safeSeconds = clamp(Math.round(Number(durationSeconds) || 8), 3, 60);
       io.emit("announcement:show", {
@@ -2343,8 +2571,8 @@ io.on("connection", (socket) => {
     if (action === "editPlayer" && playerId) {
       const player = players.get(playerId);
       if (!player) return reply?.({ error: "玩家不存在" });
-      const cleanName = String(name || "").trim().slice(0, 12);
-      const cleanTitle = String(title || "").trim().slice(0, 18);
+      const cleanName = sanitizeUserText(name, 12);
+      const cleanTitle = sanitizeUserText(title, 18);
       const nextPoints = Number(rankedPoints);
       if (cleanName.length < 2) return reply?.({ error: "名字至少需要 2 个字" });
       if (!Number.isFinite(nextPoints)) return reply?.({ error: "积分格式不正确" });
@@ -2363,9 +2591,19 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
+    const sid = socketIdToSid.get(socket.id);
+    const ipAddress = String(socket.data.ipAddress || socketIp(socket));
+    if (sidToSocketId.get(String(sid)) === socket.id) sidToSocketId.delete(String(sid));
+    socketIdToSid.delete(socket.id);
+    const socketsForIp = socketIdsByIp.get(ipAddress);
+    if (socketsForIp) {
+      socketsForIp.delete(socket.id);
+      if (socketsForIp.size === 0) socketIdsByIp.delete(ipAddress);
+    }
     adminSocketIds.delete(socket.id);
     const player = getPlayer(socket.id);
     if (!player) return;
+    securityLog("socket_disconnected", { sid: player.id, ip: ipAddress, socketId: socket.id, userAgent: socket.handshake.headers["user-agent"] });
     serverStats.disconnects += 1;
     clearDisconnectHold(player);
     player.socketId = undefined;
