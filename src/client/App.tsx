@@ -8,6 +8,14 @@ const dailyAnnouncementKey = "rps-online-daily-announcement";
 const defaultRoomName = "新的锤子剪刀布房间";
 const defaultOthelloRoomName = "新的黑白棋房间";
 const maxImageUploadBytes = 8 * 1024 * 1024;
+const othelloBoardThemes = [
+  { id: "classic", name: "经典绿", description: "传统棋盘，最清楚耐看。", board: "#2f8a64", cell: "#38a474", line: "rgba(18, 72, 52, 0.55)", hover: "#45b883", border: "#2f7a5c" },
+  { id: "pastel", name: "粉蓝白", description: "柔和一点，适合夜里轻松玩。", board: "#d8f0ff", cell: "#f8d7e9", line: "rgba(81, 124, 155, 0.35)", hover: "#e9f7ff", border: "#8fc7e8" },
+  { id: "midnight", name: "深夜蓝", description: "暗色棋盘，不刺眼。", board: "#172339", cell: "#24395d", line: "rgba(159, 190, 255, 0.24)", hover: "#2f4a78", border: "#6b8dd6" },
+  { id: "wood", name: "木纹棕", description: "温暖桌游感。", board: "#9a6a3d", cell: "#b8844d", line: "rgba(78, 46, 20, 0.45)", hover: "#c89459", border: "#7a4e2a" },
+  { id: "neon", name: "霓虹紫", description: "更游戏感，适合整活。", board: "#24133e", cell: "#43206f", line: "rgba(244, 157, 255, 0.34)", hover: "#5b2b94", border: "#f49dff" }
+] as const;
+type OthelloBoardThemeId = typeof othelloBoardThemes[number]["id"];
 
 async function ensureSessionToken() {
   const existing = localStorage.getItem(tokenKey);
@@ -674,7 +682,8 @@ function CreateRoom({ config, me, onCreated, onCancel, onError }: { config: AppC
     stake: 5,
     enableRankMultiplier: false,
     rankMultiplier: 1,
-    enableExtremeRanked: false
+    enableExtremeRanked: false,
+    othelloBoardTheme: "classic"
   });
   const [customRoomName, setCustomRoomName] = useState(false);
 
@@ -708,6 +717,7 @@ function patch(next: Partial<RoomSettings>) {
         merged.name = next.gameId === "othello" ? defaultOthelloRoomName : defaultRoomName;
       }
       if (next.gameId === "othello" || merged.gameId === "othello") {
+        merged.othelloBoardTheme = merged.othelloBoardTheme || "classic";
         merged.enableBot = false;
         merged.enablePunishment = false;
         merged.punishmentSource = "system";
@@ -846,6 +856,33 @@ function patch(next: Partial<RoomSettings>) {
               ))}
             </div>
             {settings.gameId === "othello" && <p className="hint">黑白棋支持真人 1v1、观战、聊天和普通排位；Bot、惩罚、倍率、极限模式会自动关闭。</p>}
+            {settings.gameId === "othello" && (
+              <div className="othello-theme-grid">
+                {othelloBoardThemes.map((theme) => (
+                  <button
+                    type="button"
+                    className={`othello-theme-card ${settings.othelloBoardTheme === theme.id ? "active" : ""}`}
+                    key={theme.id}
+                    onClick={() => patch({ othelloBoardTheme: theme.id })}
+                    style={{
+                      "--theme-board": theme.board,
+                      "--theme-cell": theme.cell,
+                      "--theme-line": theme.line,
+                      "--theme-border": theme.border
+                    } as CSSProperties}
+                  >
+                    <span className="othello-theme-preview">
+                      <i />
+                      <i />
+                      <i />
+                      <i />
+                    </span>
+                    <strong>{theme.name}</strong>
+                    <small>{theme.description}</small>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <div className="create-section">
             <h3>基础</h3>
@@ -1513,6 +1550,7 @@ function OthelloScore({ room }: { room: RoomSnapshot }) {
 
 function OthelloPanel({ room, me, onMove, onRestart, onReady, onSurrender }: { room: RoomSnapshot; me: PublicPlayer; onMove: (row: number, col: number) => void; onRestart: () => void; onReady: () => void; onSurrender: () => void }) {
   const state = room.othello;
+  const boardTheme = othelloThemeStyle(room.settings.othelloBoardTheme);
   const mySeat = room.seats.A?.id === me.id ? "A" : room.seats.B?.id === me.id ? "B" : null;
   const isMyTurn = Boolean(state && mySeat && state.turn === mySeat && room.phase === "choosing" && !state.ended);
   const legalKeys = new Set((state?.legalMoves || []).map((move) => `${move.row}-${move.col}`));
@@ -1569,7 +1607,7 @@ function OthelloPanel({ room, me, onMove, onRestart, onReady, onSurrender }: { r
           投降 / 认输
         </button>
       )}
-      <div className="othello-board" role="grid" aria-label="黑白棋棋盘">
+      <div className="othello-board" role="grid" aria-label="黑白棋棋盘" style={boardTheme}>
         {(state?.board || Array.from({ length: 8 }, () => Array.from({ length: 8 }, () => null))).map((row, rowIndex) => row.map((cell, colIndex) => {
           const legal = legalKeys.has(`${rowIndex}-${colIndex}`);
           return (
@@ -1594,6 +1632,17 @@ function OthelloPanel({ room, me, onMove, onRestart, onReady, onSurrender }: { r
       </div>
     </div>
   );
+}
+
+function othelloThemeStyle(themeId?: RoomSettings["othelloBoardTheme"]): CSSProperties {
+  const theme = othelloBoardThemes.find((item) => item.id === themeId) || othelloBoardThemes[0];
+  return {
+    "--othello-board": theme.board,
+    "--othello-cell": theme.cell,
+    "--othello-line": theme.line,
+    "--othello-hover": theme.hover,
+    "--othello-border": theme.border
+  } as CSSProperties;
 }
 
 function othelloDeltaText(state: NonNullable<RoomSnapshot["othello"]>, color: "black" | "white") {
@@ -1827,6 +1876,9 @@ function SeatView({ seat, room, me, now, onSit }: { seat: SeatKey; room: RoomSna
   const stats = room.seatStats[seat];
   const battleSeatBlocked = Boolean(room.settings.enableRanked && Boolean(me.extremeModeEnabled) !== Boolean(room.settings.enableExtremeRanked));
   const othelloTurn = room.settings.gameId === "othello" && room.othello?.turn === seat && room.phase === "choosing" && !room.othello.ended;
+  const othelloColorLabel = room.settings.gameId === "othello" && room.othello
+    ? room.othello.blackSeat === seat ? "⚫ 黑棋" : "⚪ 白棋"
+    : seat === "A" ? "随机后显示黑/白" : "随机后显示黑/白";
   return (
     <div className={`seat-card seat-${seat.toLowerCase()}`}>
       <div className="seat-identity">
@@ -1836,7 +1888,7 @@ function SeatView({ seat, room, me, now, onSit }: { seat: SeatKey; room: RoomSna
       {occupant && !("isBot" in occupant) && <OfflineBadge player={occupant} now={now} />}
       <p className="choice-badge">
         {room.settings.gameId === "othello"
-          ? seat === "A" ? othelloTurn ? "⚫ 黑棋落子中" : "⚫ 黑棋" : othelloTurn ? "⚪ 白棋落子中" : "⚪ 白棋"
+          ? othelloTurn ? `${othelloColorLabel}落子中` : othelloColorLabel
           : choice ? choiceText(choice) : room.seats.A && room.seats.B ? "🤔 等待出拳" : "⏳ 等人"}
       </p>
       {occupant && !("isBot" in occupant) && <SeatStatsView stats={stats} />}

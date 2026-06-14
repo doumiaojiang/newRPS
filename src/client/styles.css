@@ -877,6 +877,54 @@ main {
   line-height: 1.45;
 }
 
+.othello-theme-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.othello-theme-card {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  text-align: left;
+  padding: 10px;
+  border-color: var(--border);
+  background: linear-gradient(180deg, var(--panel-solid), var(--panel-soft));
+}
+
+.othello-theme-card.active {
+  border-color: var(--blue-border);
+  box-shadow: 0 0 0 3px rgba(116, 199, 255, 0.24);
+}
+
+.othello-theme-preview {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  width: 54px;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border: 2px solid var(--theme-border, #2f7a5c);
+  border-radius: 8px;
+  background: var(--theme-board, #2f8a64);
+}
+
+.othello-theme-preview i {
+  display: block;
+  border: 1px solid var(--theme-line, rgba(18, 72, 52, 0.55));
+  background: var(--theme-cell, #38a474);
+}
+
+.othello-theme-card strong {
+  font-size: 13px;
+}
+
+.othello-theme-card small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -1759,10 +1807,10 @@ main {
   aspect-ratio: 1;
   display: grid;
   grid-template-columns: repeat(8, 1fr);
-  border: 3px solid color-mix(in srgb, #2f7a5c 75%, var(--border));
+  border: 3px solid color-mix(in srgb, var(--othello-border, #2f7a5c) 75%, var(--border));
   border-radius: 8px;
   overflow: hidden;
-  background: #2f8a64;
+  background: var(--othello-board, #2f8a64);
   box-shadow: inset 0 0 0 1px rgba(255,255,255,0.16), 0 18px 36px rgba(44, 89, 78, 0.18);
 }
 
@@ -1770,16 +1818,16 @@ main {
   position: relative;
   min-width: 0;
   min-height: 0;
-  border: 1px solid rgba(18, 72, 52, 0.55);
+  border: 1px solid var(--othello-line, rgba(18, 72, 52, 0.55));
   border-radius: 0;
-  background: #38a474;
+  background: var(--othello-cell, #38a474);
   display: grid;
   place-items: center;
   padding: 0;
 }
 
 .othello-cell:not(:disabled):hover {
-  background: #45b883;
+  background: var(--othello-hover, #45b883);
 }
 
 .othello-disc {
@@ -3575,6 +3623,10 @@ main {
 
   .game-choice-grid {
     grid-template-columns: 1fr;
+  }
+
+  .othello-theme-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .othello-head {

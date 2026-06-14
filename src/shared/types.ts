@@ -177,6 +177,7 @@ export type RoomSettings = {
   enableRankMultiplier?: boolean;
   rankMultiplier?: RankMultiplier;
   enableExtremeRanked?: boolean;
+  othelloBoardTheme?: "classic" | "pastel" | "midnight" | "wood" | "neon";
 };
 
 export type PunishmentProof = {
