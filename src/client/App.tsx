@@ -8,6 +8,24 @@ const defaultRoomName = "新的锤子剪刀布房间";
 const defaultOthelloRoomName = "新的黑白棋房间";
 const maxImageUploadBytes = 8 * 1024 * 1024;
 
+async function ensureSessionToken() {
+  const existing = localStorage.getItem(tokenKey);
+  if (existing && existing.split(".").length === 3) return existing;
+  if (existing) localStorage.removeItem(tokenKey);
+  const response = await fetch("/api/session", { method: "POST" });
+  const data = await response.json();
+  if (!response.ok || !data.token) throw new Error(data.message || "Session failed");
+  localStorage.setItem(tokenKey, data.token);
+  return String(data.token);
+}
+
+async function connectSocketWithSession() {
+  const token = await ensureSessionToken();
+  socket.auth = { token };
+  if (!socket.connected) socket.connect();
+  return token;
+}
+
 type MeState = { player: PublicPlayer; token: string; roomId?: string; room?: RoomSnapshot };
 type AnnouncementPayload = { id: string; message: string; durationMs: number; createdAt: number };
 
@@ -140,6 +158,14 @@ export function App() {
   const [theme, setTheme] = useState<"light" | "dark">(() => (localStorage.getItem("rps-online-theme") === "dark" ? "dark" : "light"));
   const restoreInFlightRef = useRef(false);
 
+  useEffect(() => {
+    connectSocketWithSession().catch(() => {
+      localStorage.removeItem(tokenKey);
+      setConnectionState("disconnected");
+      setNotice("连接认证失败，请刷新后重试。");
+    });
+  }, []);
+
   async function restoreSession(options: { showRecoveredNotice?: boolean; clearBadToken?: boolean } = {}) {
     if (restoreInFlightRef.current) return;
     const token = localStorage.getItem(tokenKey);
@@ -214,6 +240,10 @@ export function App() {
       setConnectionState("disconnected");
       setNotice("连接已断开，正在重连。");
     });
+    socket.on("connect_error", () => {
+      localStorage.removeItem(tokenKey);
+      connectSocketWithSession().catch(() => setConnectionState("disconnected"));
+    });
     socket.io.on("reconnect_attempt", () => setConnectionState("connecting"));
     return () => {
       socket.off("lobby:update");
@@ -226,6 +256,7 @@ export function App() {
       socket.off("announcement:show");
       socket.off("connect");
       socket.off("disconnect");
+      socket.off("connect_error");
       socket.io.off("reconnect_attempt");
     };
   }, []);
@@ -2499,6 +2530,31 @@ function AdminPanel({ config, lobby, onBack, onError }: { config: AppConfig; lob
     }
   }
 
+  async function exportConfig() {
+    try {
+      const response = await fetch(`/api/config/export?password=${encodeURIComponent(password)}`, {
+        method: "GET",
+        headers: { "Accept": "application/json" }
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.message || "配置导出失败");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "rps-config.json";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      onError("配置已导出");
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "配置导出失败");
+    }
+  }
+
   function patch(next: Partial<AppConfig>) {
     setDirty(true);
     setDraft((old) => ({ ...old, ...next }));
@@ -3263,7 +3319,7 @@ function AdminPanel({ config, lobby, onBack, onError }: { config: AppConfig; lob
             <div className="admin-sticky-actions">
               <button className="primary" onClick={save}><Save size={16} /> 保存配置</button>
               <button onClick={resetDefault}><RefreshCcw size={16} /> 恢复默认</button>
-              <a className="button-link" href="/api/config/export" download="rps-config.json"><Download size={16} /> 导出配置</a>
+              <button onClick={exportConfig}><Download size={16} /> 导出配置</button>
               <button onClick={onBack}>返回</button>
             </div>
           </div>
