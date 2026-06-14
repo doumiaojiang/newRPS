@@ -1002,6 +1002,7 @@ function createPlayer(name: string, genderId: string, token: string): PlayerStat
     extremeModeEnabled: false,
     extremeWinStreak: 0,
     extremeLastDecayHour: currentExtremeDecayHour(),
+    extremeForceClosed: false,
     token: token || randomId(),
     stats: { wins: 0, losses: 0, draws: 0, punishments: 0, rankedPoints: 0, title, titleSegmentId: titleSegment?.id },
     othelloStats: freshOthelloStats(),
@@ -2592,23 +2593,67 @@ io.on("connection", (socket) => {
     if (player.roomId) broadcastRoom(player.roomId);
   });
 
-  guardedOn(socket, "nameWar:renameTarget", { limit: 8, windowMs: 60_000, cooldownMs: 60_000 }, ({ targetId, name }: { targetId: string; name: string }, reply) => {
+  guardedOn(socket, "extreme:forceClose", { limit: 4, windowMs: 60_000, cooldownMs: 60_000 }, (_payload, reply) => {
+    const player = getPlayer(socket.id);
+    if (!player) return reply?.({ error: "请先进入游戏" });
+    if (!player.extremeModeEnabled) return reply?.({ error: "你还没有开启极限模式" });
+    const now = Date.now();
+    player.extremeModeEnabled = false;
+    player.extremeModeToggledAt = now;
+    player.extremeModeCooldownUntil = now + config.extremeMode.cooldownHours * 3_600_000;
+    player.extremeWinStreak = 0;
+    player.extremeForceClosed = true;
+    player.extremeForceClosedAt = now;
+    player.displayName = formatDisplayName(player);
+    refreshPlayerSnapshots(player);
+    reply?.({ player: publicPlayer(player) });
+    broadcastLobby();
+    if (player.roomId) broadcastRoom(player.roomId);
+  });
+
+  guardedOn(socket, "nameWar:renameTarget", { limit: 8, windowMs: 60_000, cooldownMs: 60_000 }, ({ targetId, name, kind }: { targetId: string; name: string; kind?: "nameWar" | "extreme" }, reply) => {
     const actor = getPlayer(socket.id);
     const target = players.get(targetId);
     if (!actor) return reply?.({ error: "请先进入游戏" });
-    if (!target) return reply?.({ error: "失格者不存在" });
+    if (!target) return reply?.({ error: "改名目标不存在" });
     refreshNameWarState(target);
     if (actor.id === target.id) return reply?.({ error: "不能修改自己的名字" });
+    const now = Date.now();
+    const cleanName = cleanText(name, 12);
+    if (cleanName.length < 2) return reply?.({ error: "新名字至少需要 2 个字" });
+    const renameKind = kind || (isNameWarRenameTarget(target) ? "nameWar" : target.extremeForceClosed ? "extreme" : "nameWar");
+
+    if (renameKind === "extreme") {
+      if (!target.extremeForceClosed) return reply?.({ error: "对方不是极限强关可改名目标" });
+      if (!actor.extremeModeEnabled) return reply?.({ error: "只有开启极限模式的玩家可以修改极限强关目标" });
+      const minPoints = Math.max(1, Math.round(config.extremeMode.forceRenameMinPoints || 1));
+      if (actor.stats.rankedPoints < minPoints) return reply?.({ error: `需要极限模式且至少 ${minPoints} 分才能修改极限强关目标` });
+      if (target.extremeRenameProtectedUntil && target.extremeRenameProtectedUntil > now) {
+        const hours = Math.ceil((target.extremeRenameProtectedUntil - now) / 3_600_000);
+        return reply?.({ error: `对方正在极限改名保护期内，请 ${hours} 小时后再试` });
+      }
+      target.name = cleanName;
+      target.nameWarOriginalName = cleanName;
+      target.extremeRenameProtectedUntil = now + Math.max(1, config.extremeMode.forceRenameProtectHours || 4) * 3_600_000;
+      target.extremeRenamedBy = actor.id;
+      target.extremeRenamedByName = playerShortName(actor);
+      refreshNameWarState(target, now);
+      target.displayName = formatDisplayName(target);
+      refreshPlayerSnapshots(target);
+      reply?.({ ok: true });
+      broadcastLobby();
+      if (target.roomId) broadcastRoom(target.roomId);
+      if (actor.roomId && actor.roomId !== target.roomId) broadcastRoom(actor.roomId);
+      return;
+    }
+
     if (actor.stats.rankedPoints < 500) return reply?.({ error: "需要 500 分以上才能修改失格者名字" });
     if (!isNameWarRenameTarget(target)) return reply?.({ error: "对方当前不是可改名失格者" });
-    const now = Date.now();
     if (target.nameWarRenameProtectedUntil && target.nameWarRenameProtectedUntil > now) {
       const hours = Math.ceil((target.nameWarRenameProtectedUntil - now) / 3_600_000);
       return reply?.({ error: `对方正在保护期内，请 ${hours} 小时后再试` });
     }
     if (nameWarRenameQuota(actor, now) <= 0) return reply?.({ error: "你 3 小时内已经修改了 3 个名字" });
-    const cleanName = cleanText(name, 12);
-    if (cleanName.length < 2) return reply?.({ error: "新名字至少需要 2 个字" });
     target.nameWarPenaltyName = cleanName;
     target.nameWarPunished = true;
     target.nameWarRenameProtectedUntil = now + 21_600_000;

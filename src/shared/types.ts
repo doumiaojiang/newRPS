@@ -113,6 +113,11 @@ export type PublicPlayer = {
   extremeModeCooldownUntil?: number;
   extremeWinStreak?: number;
   extremeLastDecayHour?: number;
+  extremeForceClosed?: boolean;
+  extremeForceClosedAt?: number;
+  extremeRenameProtectedUntil?: number;
+  extremeRenamedBy?: string;
+  extremeRenamedByName?: string;
   roomId?: string;
   isAdmin?: boolean;
   stats: PublicStats;
@@ -364,6 +369,9 @@ export type AppConfig = {
     penaltyPrefix: string;
     loserPanelTitle: string;
     escapeTitle: string;
+    renamePanelTitle?: string;
+    nameWarLoserLabel?: string;
+    extremeForceClosedLabel?: string;
   };
   giveaway: {
     panelTitle: string;
@@ -381,6 +389,9 @@ export type AppConfig = {
     winStreakThreshold: number;
     winStreakCrashChance: number;
     crashTargetPoints: number;
+    forceCloseWarning?: string;
+    forceRenameMinPoints?: number;
+    forceRenameProtectHours?: number;
   };
   bots: {
     names: string[];

@@ -142,7 +142,12 @@ function playerSyncKey(player: PublicPlayer) {
     player.extremeModeToggledAt || 0,
     player.extremeModeCooldownUntil || 0,
     player.extremeWinStreak || 0,
-    player.extremeLastDecayHour || 0
+    player.extremeLastDecayHour || 0,
+    player.extremeForceClosed ? "1" : "0",
+    player.extremeForceClosedAt || 0,
+    player.extremeRenameProtectedUntil || 0,
+    player.extremeRenamedBy || "",
+    player.extremeRenamedByName || ""
   ].join("|");
 }
 
@@ -533,7 +538,7 @@ function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lo
   const suggestionStickToBottomRef = useRef(true);
   const visibleSuggestions = lobby.suggestions.slice(0, 50).reverse();
   const [now, setNow] = useState(Date.now());
-  const nameWarLosers = lobby.players.filter((player) => isNameWarLoserVisible(player, now));
+  const renameTargets = lobby.players.filter((player) => isRenameTargetVisible(player, now));
 
   useEffect(() => {
     const list = suggestionListRef.current;
@@ -541,7 +546,7 @@ function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lo
   }, [visibleSuggestions.length]);
 
   useEffect(() => {
-    if (!lobby.players.some((player) => !player.connected && isNameWarLoser(player) && player.disconnectedAt)) return;
+    if (!lobby.players.some((player) => !player.connected && isRenameTarget(player) && player.disconnectedAt)) return;
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, [lobby.players]);
@@ -616,7 +621,7 @@ function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lo
           {lobby.rooms.length === 0 && <p className="empty">还没有房间，先创建一个吧。</p>}
         </div>
         <div className="lobby-lower-grid">
-          <NameWarLoserPanel title={config.nameWar.loserPanelTitle} losers={nameWarLosers} me={me} onError={onError} />
+          <UniversalRenamePanel config={config} targets={renameTargets} me={me} onError={onError} />
           <GiveawayPanel config={config} players={lobby.players} me={me} onError={onError} />
         </div>
       </div>
@@ -1351,8 +1356,10 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
               </div>
               <div className={`punishment-card-grid ${room.punishedPlayerIds.length === 1 ? "single" : "double"}`}>
                 {room.punishedPlayerIds.map((playerId) => {
+                  const punishedPlayer = roomPlayerById(room, playerId);
                   const proof = room.proofs.find((item) => item.playerId === playerId);
                   const task = room.roundHistory[0]?.punishmentTasks.find((item) => item.playerId === playerId);
+                  const taskAssignerPlayer = task?.assignedBy ? roomPlayerById(room, task.assignedBy) : undefined;
                   const isMine = playerId === me.id;
                   const taskText = proof?.redoTaskText || task?.taskText || "";
                   const taskAssigned = Boolean(taskText.trim());
@@ -1366,14 +1373,14 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
                   return (
                     <div className="punishment-card" key={playerId}>
                       <div className="punishment-card-title">
-                        <h4>{punishedPlayerName(room, playerId)} {isMine ? "（你）" : ""}</h4>
+                        <h4>{punishedPlayer ? <PlayerBadge player={punishedPlayer} compact /> : punishedPlayerName(room, playerId)} {isMine ? "（你）" : ""}</h4>
                         <em>{proof?.status === "approved" ? "已完成" : proof?.status === "pending" ? "待审核" : proof?.status === "rejected" ? "重做中" : taskAssigned ? "待提交" : "等任务"}</em>
                       </div>
                       {taskAssigned && task && (
                         <div className={`task-card designed-task-card ${task.backgroundImage ? "has-task-background" : ""}`} style={taskCardStyle}>
                           <b>{isMine ? "你的任务" : "对方任务"}</b>
                           <p>{taskTextOnly(taskText, task.factionLabel)}</p>
-                          {task.assignedByName && <small>发布者：{task.assignedByName}</small>}
+                          {(taskAssignerPlayer || task.assignedByName) && <small>发布者：{taskAssignerPlayer ? displayPlayerName(taskAssignerPlayer) : task.assignedByName}</small>}
                         </div>
                       )}
                       {!taskAssigned && room.settings.punishmentSource === "player" && (
@@ -1721,11 +1728,19 @@ function PunishmentStatus({ proof, isMine, requireConfirm }: { proof: RoomSnapsh
 
 function punishedPlayerNames(room: RoomSnapshot) {
   const players = roomPlayerList(room).map((item) => item.player);
-  return room.punishedPlayerIds.map((id) => players.find((player) => player.id === id)?.name || id);
+  return room.punishedPlayerIds.map((id) => {
+    const player = players.find((item) => item.id === id);
+    return player ? displayPlayerName(player) : id;
+  });
+}
+
+function roomPlayerById(room: RoomSnapshot, playerId: string) {
+  return roomPlayerList(room).map((item) => item.player).find((player) => player.id === playerId);
 }
 
 function punishedPlayerName(room: RoomSnapshot, playerId: string) {
-  return roomPlayerList(room).map((item) => item.player).find((player) => player.id === playerId)?.name || playerId;
+  const player = roomPlayerById(room, playerId);
+  return player ? displayPlayerName(player) : playerId;
 }
 
 function taskTextOnly(taskText: string, factionLabel?: string) {
@@ -2155,27 +2170,44 @@ function isNameWarLoserVisible(player: PublicPlayer, now = Date.now()) {
   return Boolean(player.disconnectedAt && now - player.disconnectedAt <= 1_800_000);
 }
 
+function isExtremeRenameTarget(player: PublicPlayer) {
+  return Boolean(player.extremeForceClosed);
+}
+
+function isRenameTarget(player: PublicPlayer) {
+  return isNameWarLoser(player) || isExtremeRenameTarget(player);
+}
+
+function isRenameTargetVisible(player: PublicPlayer, now = Date.now()) {
+  if (!isRenameTarget(player)) return false;
+  if (player.connected) return true;
+  return Boolean(player.disconnectedAt && now - player.disconnectedAt <= 1_800_000);
+}
+
 function nameWarRenameQuotaLeft(player: PublicPlayer, now = Date.now()) {
   if (!player.nameWarRenameWindowStartedAt || now - player.nameWarRenameWindowStartedAt >= 10_800_000) return 3;
   return Math.max(0, 3 - (player.nameWarRenameCount || 0));
 }
 
-function NameWarLoserPanel({ title, losers, me, onError }: { title: string; losers: PublicPlayer[]; me: PublicPlayer; onError: (message: string) => void }) {
+function UniversalRenamePanel({ config, targets, me, onError }: { config: AppConfig; targets: PublicPlayer[]; me: PublicPlayer; onError: (message: string) => void }) {
   const [inputs, setInputs] = useState<Record<string, string>>({});
   const [now, setNow] = useState(Date.now());
-  const canRename = me.stats.rankedPoints >= 500 && nameWarRenameQuotaLeft(me, now) > 0;
+  const nameWarQuota = nameWarRenameQuotaLeft(me, now);
+  const canNameWarRename = me.stats.rankedPoints >= 500 && nameWarQuota > 0;
+  const extremeMinPoints = Math.max(1, Math.round(config.extremeMode.forceRenameMinPoints || 1));
+  const canExtremeRename = Boolean(me.extremeModeEnabled && me.stats.rankedPoints >= extremeMinPoints);
 
   useEffect(() => {
-    if (!losers.some((player) => player.nameWarRenameProtectedUntil && player.nameWarRenameProtectedUntil > now)) return;
+    if (!targets.some((player) => (player.nameWarRenameProtectedUntil && player.nameWarRenameProtectedUntil > now) || (player.extremeRenameProtectedUntil && player.extremeRenameProtectedUntil > now))) return;
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
     return () => window.clearInterval(timer);
-  }, [losers, now]);
+  }, [targets, now]);
 
-  async function renameTarget(targetId: string) {
+  async function renameTarget(targetId: string, kind: "nameWar" | "extreme") {
     const name = (inputs[targetId] || "").trim();
     if (!name) return;
     try {
-      await ask("nameWar:renameTarget", { targetId, name });
+      await ask("nameWar:renameTarget", { targetId, name, kind });
       setInputs((old) => ({ ...old, [targetId]: "" }));
       onError("名字修改成功");
     } catch (error) {
@@ -2185,33 +2217,51 @@ function NameWarLoserPanel({ title, losers, me, onError }: { title: string; lose
 
   return (
     <div className="panel name-war-loser-panel">
-      <h2>🏷️ {title || "名字争夺战失格者"}</h2>
-      <p className="hint">500 分以上玩家可抢先改名；你剩余 {nameWarRenameQuotaLeft(me, now)} / 3 次。</p>
+      <h2>🏷️ {config.nameWar.renamePanelTitle || config.nameWar.loserPanelTitle || "通用改名处"}</h2>
+      <p className="hint">名争改名需要 500 分以上，你剩余 {nameWarQuota} / 3 次；极限强关改名需要开启极限模式且至少 {extremeMinPoints} 分。</p>
       <div className="name-war-loser-list">
-        {losers.map((player) => {
-          const protectedMs = player.nameWarRenameProtectedUntil ? Math.max(0, player.nameWarRenameProtectedUntil - now) : 0;
+        {targets.map((player) => {
+          const nameWarTarget = isNameWarLoser(player);
+          const extremeTarget = isExtremeRenameTarget(player);
+          const nameWarProtectedMs = player.nameWarRenameProtectedUntil ? Math.max(0, player.nameWarRenameProtectedUntil - now) : 0;
+          const extremeProtectedMs = player.extremeRenameProtectedUntil ? Math.max(0, player.extremeRenameProtectedUntil - now) : 0;
           const offlineKeepMs = !player.connected && player.disconnectedAt ? Math.max(0, 1_800_000 - (now - player.disconnectedAt)) : 0;
-          const protectedText = protectedMs > 0 ? `保护中 ${Math.ceil(protectedMs / 3_600_000)} 小时` : "可被改名";
-          const disabled = !canRename || player.id === me.id || protectedMs > 0;
+          const nameWarProtectedText = nameWarProtectedMs > 0 ? `名争保护 ${Math.ceil(nameWarProtectedMs / 3_600_000)} 小时` : "名争可改";
+          const extremeProtectedText = extremeProtectedMs > 0 ? `极限保护 ${Math.ceil(extremeProtectedMs / 3_600_000)} 小时` : "极限可改";
+          const inputValue = inputs[player.id] || "";
+          const selfTarget = player.id === me.id;
+          const nameWarDisabled = !nameWarTarget || !canNameWarRename || selfTarget || nameWarProtectedMs > 0;
+          const extremeDisabled = !extremeTarget || !canExtremeRename || selfTarget || extremeProtectedMs > 0;
           return (
             <div className="name-war-loser-card" key={player.id}>
               <div className="admin-card-title">
                 <strong>{player.nameWarPenaltyName || player.name}</strong>
                 <small>
                   <span className={`online-dot ${player.connected ? "online" : "offline"}`}>{player.connected ? "在线" : "离线"}</span>
-                  {player.stats.rankedPoints} 分 · {protectedText}
+                  {player.stats.rankedPoints} 分
                 </small>
               </div>
+              <div className="room-info-tags">
+                {nameWarTarget && <span className="room-info-tag">⚔️ {config.nameWar.nameWarLoserLabel || "名争失格"}</span>}
+                {extremeTarget && <span className="room-info-tag">⚡ {config.nameWar.extremeForceClosedLabel || "极限强关"}</span>}
+              </div>
+              <p className="hint">
+                {nameWarTarget ? nameWarProtectedText : ""}
+                {nameWarTarget && extremeTarget ? " · " : ""}
+                {extremeTarget ? extremeProtectedText : ""}
+              </p>
               {offlineKeepMs > 0 && <p className="hint">离线保留：约 {Math.ceil(offlineKeepMs / 60_000)} 分钟后从名单隐藏。</p>}
-              {player.nameWarRenamedByName && <p className="hint">最后改名者：{player.nameWarRenamedByName}</p>}
+              {player.nameWarRenamedByName && <p className="hint">名争最后改名者：{player.nameWarRenamedByName}</p>}
+              {player.extremeRenamedByName && <p className="hint">极限最后改名者：{player.extremeRenamedByName}</p>}
               <div className="send-row">
-                <input value={inputs[player.id] || ""} maxLength={12} disabled={disabled} onChange={(event) => setInputs((old) => ({ ...old, [player.id]: event.target.value }))} placeholder={disabled ? "暂时不能改名" : "输入新名字"} />
-                <button disabled={disabled} onClick={() => renameTarget(player.id)}>提交</button>
+                <input value={inputValue} maxLength={12} disabled={selfTarget || (!nameWarTarget && !extremeTarget)} onChange={(event) => setInputs((old) => ({ ...old, [player.id]: event.target.value }))} placeholder={selfTarget ? "不能改自己的名字" : "输入新名字"} />
+                {nameWarTarget && <button disabled={nameWarDisabled || !inputValue.trim()} onClick={() => renameTarget(player.id, "nameWar")}>名争改名</button>}
+                {extremeTarget && <button disabled={extremeDisabled || !inputValue.trim()} onClick={() => renameTarget(player.id, "extreme")}>极限改名</button>}
               </div>
             </div>
           );
         })}
-        {losers.length === 0 && <p className="empty">暂无失格者</p>}
+        {targets.length === 0 && <p className="empty">暂无可改名目标</p>}
       </div>
     </div>
   );
@@ -2404,6 +2454,19 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
     }
   }
 
+  async function forceCloseExtremeMode() {
+    const ok = window.confirm(config.extremeMode.forceCloseWarning || "强行关闭极限模式后，你会进入通用改名处，可被符合条件的极限玩家改名。确认继续？");
+    if (!ok) return;
+    try {
+      const result = await ask<{ player: PublicPlayer }>("extreme:forceClose", {});
+      setExtremeModeEnabled(false);
+      onUpdated(result.player);
+      onError("已强行关闭极限模式");
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "强行关闭失败");
+    }
+  }
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <section className="profile-panel" onClick={(event) => event.stopPropagation()}>
@@ -2481,7 +2544,12 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
             <p className="hint">极限排位连胜达到 {config.extremeMode.winStreakThreshold} 局后，每次继续获胜都有 {Math.round(config.extremeMode.winStreakCrashChance * 100)}% 几率额外扣 {config.extremeMode.crashTargetPoints} 分。</p>
             {me.stats.rankedPoints < 0 && !me.extremeModeEnabled && <p className="hint danger-hint">你当前是负分，不能开启极限模式。</p>}
             {extremeCannotClose && <p className="hint danger-hint">排位分必须大于 0 才能关闭极限模式，0 分不能关闭。</p>}
+            {me.extremeForceClosed && <p className="hint danger-hint">你曾强行关闭极限模式，已进入通用改名处。</p>}
+            {me.extremeRenameProtectedUntil && me.extremeRenameProtectedUntil > now && <p className="hint">极限改名保护中：约 {Math.ceil((me.extremeRenameProtectedUntil - now) / 3_600_000)} 小时。</p>}
             {extremeCooldownMs > 0 && <p className="hint">关闭后冷却：约 {extremeCooldownHours} 小时后可重新开启。</p>}
+            {me.extremeModeEnabled && (
+              <button type="button" className="danger-button" onClick={forceCloseExtremeMode}>强行关闭极限模式</button>
+            )}
           </div>
           <div className="profile-action-row">
             <button className="primary" disabled={(nameChanged && (cooldownMs > 0 || nameLockedByWar)) || ((nameWarChanged || nameWarAllowRenameChanged) && nameWarCooldownMs > 0) || giveawayCannotClose || extremeCannotEnable || extremeCannotClose} onClick={saveProfile}><Save size={16} /> 保存个人资料</button>
@@ -3028,11 +3096,11 @@ function AdminPanel({ config, lobby, onBack, onError }: { config: AppConfig; lob
       const preview = `${draft.nameWar.penaltyPrefix || "失名者"}-A7K2`;
       return (
         <div className="config-section admin-section-card">
-          <AdminSectionHeader title="名字争夺战" subtitle="设置惩罚名前缀、失格者面板标题和退出高难度后的称号。" />
+          <AdminSectionHeader title="名字争夺战" subtitle="设置惩罚名前缀、通用改名处标题和退出高难度后的称号。" />
           <div className="admin-preview-card">
             <span>预览</span>
             <strong>{preview}</strong>
-            <p>{draft.nameWar.loserPanelTitle || "名字争夺战失格者"} · 退出高难度称号：{draft.nameWar.escapeTitle || "逃跑的人"}</p>
+            <p>{draft.nameWar.renamePanelTitle || draft.nameWar.loserPanelTitle || "通用改名处"} · {draft.nameWar.nameWarLoserLabel || "名争失格"} / {draft.nameWar.extremeForceClosedLabel || "极限强关"} · 退出高难度称号：{draft.nameWar.escapeTitle || "逃跑的人"}</p>
           </div>
           <div className="config-row">
             <label className="field-label">
@@ -3040,8 +3108,20 @@ function AdminPanel({ config, lobby, onBack, onError }: { config: AppConfig; lob
               <input value={draft.nameWar.penaltyPrefix} maxLength={16} onChange={(event) => patch({ nameWar: { ...draft.nameWar, penaltyPrefix: event.target.value } })} placeholder="例如：失名者" />
             </label>
             <label className="field-label">
-              <span>大厅失格者面板标题</span>
+              <span>旧失格者面板标题</span>
               <input value={draft.nameWar.loserPanelTitle} maxLength={24} onChange={(event) => patch({ nameWar: { ...draft.nameWar, loserPanelTitle: event.target.value } })} placeholder="名字争夺战失格者" />
+            </label>
+            <label className="field-label">
+              <span>通用改名处标题</span>
+              <input value={draft.nameWar.renamePanelTitle || ""} maxLength={24} onChange={(event) => patch({ nameWar: { ...draft.nameWar, renamePanelTitle: event.target.value } })} placeholder="通用改名处" />
+            </label>
+            <label className="field-label">
+              <span>名争来源标签</span>
+              <input value={draft.nameWar.nameWarLoserLabel || ""} maxLength={16} onChange={(event) => patch({ nameWar: { ...draft.nameWar, nameWarLoserLabel: event.target.value } })} placeholder="名争失格" />
+            </label>
+            <label className="field-label">
+              <span>极限强关标签</span>
+              <input value={draft.nameWar.extremeForceClosedLabel || ""} maxLength={16} onChange={(event) => patch({ nameWar: { ...draft.nameWar, extremeForceClosedLabel: event.target.value } })} placeholder="极限强关" />
             </label>
             <label className="field-label">
               <span>退出高难度称号</span>
@@ -3103,7 +3183,13 @@ function AdminPanel({ config, lobby, onBack, onError }: { config: AppConfig; lob
             <label className="field-label"><span>连胜阈值</span><input type="number" min={1} max={100} value={extreme.winStreakThreshold} onChange={(event) => patchExtreme({ ...extreme, winStreakThreshold: Number(event.target.value) })} /></label>
             <label className="field-label"><span>连胜风险概率 0-1</span><input type="number" min={0} max={1} step={0.01} value={extreme.winStreakCrashChance} onChange={(event) => patchExtreme({ ...extreme, winStreakCrashChance: Number(event.target.value) })} /></label>
             <label className="field-label"><span>连胜风险扣分</span><input type="number" min={1} max={1999} value={extreme.crashTargetPoints} onChange={(event) => patchExtreme({ ...extreme, crashTargetPoints: Number(event.target.value) })} /></label>
+            <label className="field-label"><span>强关改名最低分</span><input type="number" min={1} max={999} value={extreme.forceRenameMinPoints || 1} onChange={(event) => patchExtreme({ ...extreme, forceRenameMinPoints: Number(event.target.value) })} /></label>
+            <label className="field-label"><span>强关保护小时</span><input type="number" min={1} max={168} value={extreme.forceRenameProtectHours || 4} onChange={(event) => patchExtreme({ ...extreme, forceRenameProtectHours: Number(event.target.value) })} /></label>
           </div>
+          <label className="field-label">
+            <span>强行关闭提示</span>
+            <textarea value={extreme.forceCloseWarning || ""} maxLength={180} onChange={(event) => patchExtreme({ ...extreme, forceCloseWarning: event.target.value })} placeholder="强行关闭极限模式后..." />
+          </label>
           <div className="admin-card">
             <div className="admin-card-title">
               <strong>正分输分比例</strong>
