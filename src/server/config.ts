@@ -115,6 +115,8 @@ const defaultDailyAnnouncement: AppConfig["dailyAnnouncement"] = {
 };
 const defaultAccessControl = { maxOnlinePerIp: 3, maxCreatesPer10Min: 5 };
 const defaultRoomInfoTags: Record<string, RoomInfoTagStyle> = {
+  gameRps: { label: "锤子剪刀布", textColor: "#4d5c6f", backgroundColor: "#eef3f8", borderColor: "#c9d6e4" },
+  gameOthello: { label: "黑白棋", textColor: "#163c32", backgroundColor: "#dff7ec", borderColor: "#93d8b8" },
   phaseReady: { label: "等待坐满", textColor: "#225c8d", backgroundColor: "#e5f5ff", borderColor: "#9ed7ff" },
   phaseChoosing: { label: "出拳中", textColor: "#6b4b00", backgroundColor: "#fff3c4", borderColor: "#ffd875" },
   phaseResult: { label: "结算中", textColor: "#6b3f8d", backgroundColor: "#f1e7ff", borderColor: "#c9a9ff" },

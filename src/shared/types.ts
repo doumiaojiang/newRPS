@@ -25,6 +25,23 @@ export type OthelloState = {
   blackCount: number;
   whiteCount: number;
   rankedDelta?: Record<SeatKey, number>;
+  settlementEvents?: string[];
+  pendingSettlement?: {
+    id: string;
+    seat: SeatKey;
+    opponentSeat: SeatKey;
+    flips: number;
+    stake: number;
+    nextTurn: SeatKey;
+    expiresAt: number;
+    forced?: "giveaway" | "tribute";
+    resolvedAs?: "normal" | "giveaway" | "tribute";
+  };
+  surrenderRequest?: {
+    fromSeat: SeatKey;
+    toSeat: SeatKey;
+    createdAt: number;
+  };
   ended?: boolean;
   winner?: RoundResult;
 };

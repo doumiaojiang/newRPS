@@ -91,6 +91,7 @@ const players = new Map<string, PlayerState>();
 const tokenToPlayerId = new Map<string, string>();
 const rooms = new Map<string, RoomState>();
 const botTimers = new Map<string, NodeJS.Timeout>();
+const othelloSettlementTimers = new Map<string, NodeJS.Timeout>();
 const ipCreateAttempts = new Map<string, number[]>();
 const suggestions: Suggestion[] = [];
 const lobbyChat: ChatMessage[] = [];
@@ -783,6 +784,7 @@ function cleanupRoomIfEmpty(room: RoomState) {
   const botTimer = botTimers.get(room.id);
   if (botTimer) clearTimeout(botTimer);
   botTimers.delete(room.id);
+  clearOthelloSettlementTimer(room.id);
   rooms.delete(room.id);
   broadcastLobby();
   return true;
@@ -1155,13 +1157,20 @@ function applyDisconnectForfeit(room: RoomState, player: PlayerState) {
 }
 
 function applyOthelloDisconnectForfeit(room: RoomState, forfeit: DisconnectForfeit) {
+  flushOthelloPendingSettlement(room);
+  if (room.phase === "result" || room.othello?.ended) return true;
   const winner = players.get(forfeit.winnerId);
   const loser = players.get(forfeit.loserId);
   const counts = room.othello ? othelloCounts(room.othello.board) : { blackCount: 0, whiteCount: 0 };
   if (winner) winner.stats.wins += 1;
   if (loser) loser.stats.losses += 1;
   const rankedFloorText = applyOthelloForfeitRankedFloor(room, forfeit.winnerSeat, forfeit.loserSeat);
+  const fullForfeitText = applyOthelloEscapeRankedPenalty(room, forfeit.winnerSeat, forfeit.loserSeat, 1, "断线全输");
   const rankedDelta = room.othello?.rankedDelta || { A: 0, B: 0 };
+  const punishedPlayers = punishmentPlayersForResult(room, forfeit.winnerSeat);
+  const punishedNames = punishedPlayers.map((player) => playerShortName(player));
+  const punishment = currentPunishment(room);
+  const punishmentTasks = buildPunishmentTasks(room, punishedPlayers, forfeit.winnerSeat, punishment);
   addOthelloOutcomeStats(
     forfeit.winnerSeat === "A" ? winner : loser,
     forfeit.winnerSeat === "B" ? winner : loser,
@@ -1180,9 +1189,10 @@ function applyOthelloDisconnectForfeit(room: RoomState, forfeit: DisconnectForfe
     ...counts,
     ended: true,
     winner: forfeit.winnerSeat,
-    legalMoves: []
+    legalMoves: [],
+    surrenderRequest: undefined
   } : undefined;
-  room.resultText = `${forfeit.loserName} 断线超时判负，${forfeit.winnerName}胜利（黑 ${counts.blackCount}，白 ${counts.whiteCount}；实时结算：${othelloRankedText(room.othello)}${rankedFloorText}）${streakText}`;
+  room.resultText = `${forfeit.loserName} 断线超时判负，${forfeit.winnerName}胜利（黑 ${counts.blackCount}，白 ${counts.whiteCount}；实时结算：${othelloRankedText(room.othello)}${rankedFloorText}${fullForfeitText}）${streakText}${othelloSettlementSummary(room.othello)}`;
   if (winner) refreshPlayerSnapshots(winner);
   if (loser) refreshPlayerSnapshots(loser);
   addRoundHistory(room, {
@@ -1195,7 +1205,7 @@ function applyOthelloDisconnectForfeit(room: RoomState, forfeit: DisconnectForfe
     moveB: forfeit.loserSeat === "B" ? "forfeit" : "noMove",
     result: forfeit.winnerSeat,
     resultLabel: `${forfeit.winnerName}胜利`,
-    resultText: room.resultText,
+    resultText: `${room.resultText}（断线判负）`,
     gameId: "othello",
     othelloScore: { black: counts.blackCount, white: counts.whiteCount },
     othelloBlackSeat: room.othello?.blackSeat,
@@ -1204,11 +1214,14 @@ function applyOthelloDisconnectForfeit(room: RoomState, forfeit: DisconnectForfe
     rankMultiplier: room.settings.enableRanked ? forfeit.rankMultiplier : undefined,
     effectiveStake: room.settings.enableRanked ? Math.max(Math.abs(rankedDelta.A), Math.abs(rankedDelta.B)) : undefined,
     extremeRanked: Boolean(room.settings.enableExtremeRanked),
-    punishmentTasks: [],
-    punishedNames: [],
+    punishmentName: punishedNames.length ? punishmentNameForRoom(room, punishment) : undefined,
+    punishmentDescription: punishedNames.length && room.settings.punishmentSource !== "player" ? punishment?.description : undefined,
+    punishmentTasks,
+    punishedNames,
     proofs: []
   });
   roomNotice(room, room.resultText);
+  setupPunishmentOrNext(room, forfeit.winnerSeat);
   return true;
 }
 
@@ -1494,6 +1507,11 @@ function othelloRankedText(state: OthelloState | undefined) {
   return `黑棋 ${blackDelta >= 0 ? "+" : ""}${blackDelta}，白棋 ${whiteDelta >= 0 ? "+" : ""}${whiteDelta}`;
 }
 
+function othelloSettlementSummary(state: OthelloState | undefined) {
+  const events = state?.settlementEvents || [];
+  return events.length ? `；本局白给/上贡：${events.join("；")}` : "";
+}
+
 function applyOthelloForfeitRankedFloor(room: RoomState, winnerSeat: SeatKey, loserSeat: SeatKey) {
   if (!room.settings.enableRanked || !room.othello?.rankedDelta) return "";
   const winner = room.seats[winnerSeat] && !("isBot" in room.seats[winnerSeat]!) ? players.get(room.seats[winnerSeat]!.id) : undefined;
@@ -1513,6 +1531,92 @@ function applyOthelloForfeitRankedFloor(room: RoomState, winnerSeat: SeatKey, lo
   return `；判负兜底：赢家至少 +${minimumWin}，输家至少 -${minimumWin}`;
 }
 
+function applyOthelloEscapeRankedPenalty(room: RoomState, winnerSeat: SeatKey, loserSeat: SeatKey, ratio: number, label: string) {
+  if (!room.settings.enableRanked || !room.othello?.rankedDelta) return "";
+  const winner = room.seats[winnerSeat] && !("isBot" in room.seats[winnerSeat]!) ? players.get(room.seats[winnerSeat]!.id) : undefined;
+  const loser = room.seats[loserSeat] && !("isBot" in room.seats[loserSeat]!) ? players.get(room.seats[loserSeat]!.id) : undefined;
+  const unit = room.settings.stake * rankMultiplierFor(room.settings);
+  const remainingSpaces = room.othello.board.flat().filter((cell) => cell === null).length;
+  const penalty = Math.max(unit, Math.round(remainingSpaces * unit * ratio));
+  if (winner) updateRankedPoints(winner, penalty);
+  if (loser) updateRankedPoints(loser, -penalty);
+  room.othello.rankedDelta[winnerSeat] = (room.othello.rankedDelta[winnerSeat] || 0) + penalty;
+  room.othello.rankedDelta[loserSeat] = (room.othello.rankedDelta[loserSeat] || 0) - penalty;
+  const ratioText = ratio === 0.5 ? "1/2" : `${ratio}`;
+  return `；${label}追加：剩余 ${remainingSpaces} 格 × ${unit} × ${ratioText} = ${penalty}`;
+}
+
+function clearOthelloSettlementTimer(roomId: string) {
+  const timer = othelloSettlementTimers.get(roomId);
+  if (timer) clearTimeout(timer);
+  othelloSettlementTimers.delete(roomId);
+}
+
+function scheduleOthelloSettlement(room: RoomState) {
+  clearOthelloSettlementTimer(room.id);
+  const pending = room.othello?.pendingSettlement;
+  if (!pending) return;
+  const timer = setTimeout(() => {
+    const current = rooms.get(room.id);
+    if (!current?.othello?.pendingSettlement || current.othello.pendingSettlement.id !== pending.id) return;
+    settleOthelloPendingMove(current, pending.forced || "normal", "timeout");
+    broadcastRoom(current.id, true);
+    broadcastLobby();
+  }, Math.max(250, pending.expiresAt - Date.now()));
+  othelloSettlementTimers.set(room.id, timer);
+}
+
+function settleOthelloPendingMove(room: RoomState, mode: "normal" | "giveaway" | "tribute", reason: "choice" | "timeout" | "forced" | "cleanup" = "choice") {
+  const pending = room.othello?.pendingSettlement;
+  if (!room.othello || !pending) return { ok: false, error: "当前没有待结算落子" };
+  const finalMode = pending.forced || mode;
+  clearOthelloSettlementTimer(room.id);
+  const player = room.seats[pending.seat] && !("isBot" in room.seats[pending.seat]!) ? players.get(room.seats[pending.seat]!.id) : undefined;
+  const opponent = room.seats[pending.opponentSeat] && !("isBot" in room.seats[pending.opponentSeat]!) ? players.get(room.seats[pending.opponentSeat]!.id) : undefined;
+  const rankedDelta = room.othello.rankedDelta || { A: 0, B: 0 };
+  let resultText = "";
+
+  if (finalMode === "normal") {
+    const rankedResult = applyRankedStake(player, opponent, pending.stake);
+    rankedDelta[pending.seat] += rankedResult.winnerDelta;
+    rankedDelta[pending.opponentSeat] += rankedResult.loserDelta;
+    resultText = `${occupantName(room.seats[pending.seat])} 本手正常结算：${rankedResult.winnerDelta >= 0 ? "+" : ""}${rankedResult.winnerDelta}`;
+  } else if (finalMode === "giveaway") {
+    if (player) addGiveawayValue(player, pending.flips * 0.1);
+    resultText = `${occupantName(room.seats[pending.seat])} 本手白给，${pending.flips} 子不结算排位分`;
+  } else {
+    const rankedResult = applyRankedStake(opponent, player, pending.stake);
+    rankedDelta[pending.opponentSeat] += rankedResult.winnerDelta;
+    rankedDelta[pending.seat] += rankedResult.loserDelta;
+    if (player) addGiveawayValue(player, pending.flips * 0.2);
+    resultText = `${occupantName(room.seats[pending.seat])} 本手上贡，${occupantName(room.seats[pending.opponentSeat])} 获得 ${rankedResult.winnerDelta >= 0 ? "+" : ""}${rankedResult.winnerDelta}`;
+  }
+
+  if (reason === "timeout" && finalMode === "normal") resultText += "（10 秒未选择，自动不白给）";
+  if (pending.forced === "giveaway") resultText += "（强制白给）";
+  if (pending.forced === "tribute") resultText += "（强制上贡）";
+
+  const settlementEvents = [...(room.othello.settlementEvents || []), resultText].slice(-30);
+  if (player) refreshPlayerSnapshots(player);
+  if (opponent) refreshPlayerSnapshots(opponent);
+  room.othello = {
+    ...room.othello,
+    rankedDelta,
+    settlementEvents,
+    pendingSettlement: undefined,
+    surrenderRequest: undefined
+  };
+  room.resultText = resultText;
+  roomNotice(room, resultText);
+  advanceOthelloTurn(room, pending.nextTurn, 0);
+  return { ok: true };
+}
+
+function flushOthelloPendingSettlement(room: RoomState) {
+  if (!room.othello?.pendingSettlement) return;
+  settleOthelloPendingMove(room, "normal", "cleanup");
+}
+
 function freshOthelloState(blackSeat: SeatKey = randomSeat()): OthelloState {
   const board = initialOthelloBoard();
   return {
@@ -1522,11 +1626,13 @@ function freshOthelloState(blackSeat: SeatKey = randomSeat()): OthelloState {
     legalMoves: othelloLegalMoves(board, "black"),
     passCount: 0,
     rankedDelta: { A: 0, B: 0 },
+    settlementEvents: [],
     ...othelloCounts(board)
   };
 }
 
 function resetOthelloRoom(room: RoomState) {
+  clearOthelloSettlementTimer(room.id);
   room.othello = undefined;
   room.phase = "ready";
   room.status = "waiting";
@@ -1573,10 +1679,15 @@ function scheduleOthelloReadyStart(room: RoomState) {
 
 function finishOthelloGame(room: RoomState) {
   if (!room.othello) return;
+  clearOthelloSettlementTimer(room.id);
   const { blackCount, whiteCount } = othelloCounts(room.othello.board);
   const blackSeat = room.othello.blackSeat;
   const whiteSeat = oppositeSeat(blackSeat);
   const result: RoundResult = blackCount === whiteCount ? "draw" : blackCount > whiteCount ? blackSeat : whiteSeat;
+  const punishedPlayers = punishmentPlayersForResult(room, result);
+  const punishedNames = punishedPlayers.map((player) => playerShortName(player));
+  const punishment = currentPunishment(room);
+  const punishmentTasks = buildPunishmentTasks(room, punishedPlayers, result, punishment);
   room.othello = {
     ...room.othello,
     blackCount,
@@ -1612,6 +1723,7 @@ function finishOthelloGame(room: RoomState) {
   }
   addOthelloOutcomeStats(playerA, playerB, result);
   if (rankedText) room.resultText += rankedText;
+  room.resultText += othelloSettlementSummary(room.othello);
   if (playerA) refreshPlayerSnapshots(playerA);
   if (playerB) refreshPlayerSnapshots(playerB);
   addRoundHistory(room, {
@@ -1632,16 +1744,26 @@ function finishOthelloGame(room: RoomState) {
     stake: room.settings.enableRanked ? room.settings.stake : undefined,
     rankMultiplier: room.settings.enableRanked ? rankMultiplierFor(room.settings) : undefined,
     effectiveStake: room.settings.enableRanked ? Math.max(Math.abs(rankedDelta.A), Math.abs(rankedDelta.B)) : undefined,
-    punishmentTasks: [],
-    punishedNames: [],
+    punishmentName: punishedNames.length ? punishmentNameForRoom(room, punishment) : undefined,
+    punishmentDescription: punishedNames.length && room.settings.punishmentSource !== "player" ? punishment?.description : undefined,
+    punishmentTasks,
+    punishedNames,
     proofs: []
   });
+  setupPunishmentOrNext(room, result);
 }
 
-function forceEndOthelloGame(room: RoomState, result: RoundResult, options: { label?: string; historyNote?: string; notice?: string; forfeitRankedFloor?: boolean } = {}) {
+function forceEndOthelloGame(room: RoomState, result: RoundResult, options: { label?: string; historyNote?: string; notice?: string; forfeitRankedFloor?: boolean; escapePenaltyRatio?: number; escapePenaltyLabel?: string } = {}) {
   if (!room.othello) return { ok: false, error: "黑白棋还没有开始" };
   if (room.othello.ended || room.phase === "result") return { ok: false, error: "当前黑白棋对局已经结束" };
+  flushOthelloPendingSettlement(room);
+  if (!room.othello || room.othello.ended) return { ok: false, error: "当前黑白棋对局已经结束" };
+  clearOthelloSettlementTimer(room.id);
   const { blackCount, whiteCount } = othelloCounts(room.othello.board);
+  const punishedPlayers = punishmentPlayersForResult(room, result);
+  const punishedNames = punishedPlayers.map((player) => playerShortName(player));
+  const punishment = currentPunishment(room);
+  const punishmentTasks = buildPunishmentTasks(room, punishedPlayers, result, punishment);
   const playerA = room.seats.A && !("isBot" in room.seats.A) ? players.get(room.seats.A.id) : undefined;
   const playerB = room.seats.B && !("isBot" in room.seats.B) ? players.get(room.seats.B.id) : undefined;
   room.othello = {
@@ -1650,7 +1772,8 @@ function forceEndOthelloGame(room: RoomState, result: RoundResult, options: { la
     whiteCount,
     ended: true,
     winner: result,
-    legalMoves: []
+    legalMoves: [],
+    surrenderRequest: undefined
   };
   room.phase = "result";
   room.status = "playing";
@@ -1658,6 +1781,9 @@ function forceEndOthelloGame(room: RoomState, result: RoundResult, options: { la
   const label = options.label || (result === "draw" ? "管理员判定平局" : `管理员判定${result === blackSeat ? "黑方" : "白方"}胜利`);
   const rankedFloorText = options.forfeitRankedFloor && (result === "A" || result === "B")
     ? applyOthelloForfeitRankedFloor(room, result, oppositeSeat(result))
+    : "";
+  const escapePenaltyText = options.escapePenaltyRatio && (result === "A" || result === "B")
+    ? applyOthelloEscapeRankedPenalty(room, result, oppositeSeat(result), options.escapePenaltyRatio, options.escapePenaltyLabel || "逃跑")
     : "";
   if (result === "draw") {
     if (playerA) playerA.stats.draws += 1;
@@ -1676,8 +1802,8 @@ function forceEndOthelloGame(room: RoomState, result: RoundResult, options: { la
     room.seatStats[loserSeat].losses += 1;
   }
   addOthelloOutcomeStats(playerA, playerB, result);
-  const rankedText = room.settings.enableRanked ? `；实时结算：${othelloRankedText(room.othello)}${rankedFloorText}` : "";
-  room.resultText = `${label}：黑 ${blackCount}，白 ${whiteCount}${rankedText}`;
+  const rankedText = room.settings.enableRanked ? `；实时结算：${othelloRankedText(room.othello)}${rankedFloorText}${escapePenaltyText}` : "";
+  room.resultText = `${label}：黑 ${blackCount}，白 ${whiteCount}${rankedText}${othelloSettlementSummary(room.othello)}`;
   if (playerA) refreshPlayerSnapshots(playerA);
   if (playerB) refreshPlayerSnapshots(playerB);
   const finalRankedDelta = room.othello.rankedDelta || { A: 0, B: 0 };
@@ -1700,11 +1826,14 @@ function forceEndOthelloGame(room: RoomState, result: RoundResult, options: { la
     rankMultiplier: room.settings.enableRanked ? rankMultiplierFor(room.settings) : undefined,
     effectiveStake: room.settings.enableRanked ? Math.max(Math.abs(finalRankedDelta.A), Math.abs(finalRankedDelta.B)) : undefined,
     extremeRanked: Boolean(room.settings.enableExtremeRanked),
-    punishmentTasks: [],
-    punishedNames: [],
+    punishmentName: punishedNames.length ? punishmentNameForRoom(room, punishment) : undefined,
+    punishmentDescription: punishedNames.length && room.settings.punishmentSource !== "player" ? punishment?.description : undefined,
+    punishmentTasks,
+    punishedNames,
     proofs: []
   });
   roomNotice(room, options.notice || `${label}，本局已结束。`);
+  setupPunishmentOrNext(room, result);
   return { ok: true };
 }
 
@@ -1742,6 +1871,7 @@ function advanceOthelloTurn(room: RoomState, nextTurn: SeatKey, passCount: numbe
 function applyOthelloMove(room: RoomState, seat: SeatKey, row: number, col: number) {
   if (!room.othello) return { ok: false, error: "黑白棋还没有开始" };
   if (room.phase !== "choosing") return { ok: false, error: "当前不能落子" };
+  if (room.othello.pendingSettlement) return { ok: false, error: "上一手还在等待白给/上贡结算" };
   if (room.othello.turn !== seat) return { ok: false, error: "还没轮到你落子" };
   const color = othelloColorForSeat(room.othello, seat);
   const flips = othelloFlips(room.othello.board, row, col, color);
@@ -1750,20 +1880,56 @@ function applyOthelloMove(room: RoomState, seat: SeatKey, row: number, col: numb
   board[row][col] = color;
   for (const item of flips) board[item.row][item.col] = color;
   const rankedDelta = room.othello.rankedDelta || { A: 0, B: 0 };
-  const opponentSeat = seat === "A" ? "B" : "A";
+  const opponentSeat: SeatKey = seat === "A" ? "B" : "A";
   const player = room.seats[seat] && !("isBot" in room.seats[seat]!) ? players.get(room.seats[seat]!.id) : undefined;
   const opponent = room.seats[opponentSeat] && !("isBot" in room.seats[opponentSeat]!) ? players.get(room.seats[opponentSeat]!.id) : undefined;
   addOthelloCaptureStats(player, opponent, flips.length);
+  const liveStake = flips.length * room.settings.stake * rankMultiplierFor(room.settings);
+  const useGiveawaySettlement = Boolean(room.settings.enableRanked && player?.giveawayEnabled && isHumanVsHumanRoom(room));
+  const nextTurn = othelloSeatForColor(room.othello, oppositeOthelloColor(color));
+  if (useGiveawaySettlement) {
+    const forcedGiveaway = player ? shouldTriggerGiveaway(player) : false;
+    const forced: "giveaway" | "tribute" | undefined = forcedGiveaway
+      ? (player && (player.giveawayValue || 0) >= 75 && Math.random() < 0.5 ? "tribute" : "giveaway")
+      : undefined;
+    const pending = {
+      id: randomId(),
+      seat,
+      opponentSeat,
+      flips: flips.length,
+      stake: liveStake,
+      nextTurn,
+      expiresAt: Date.now() + (forced ? 2400 : 10_000),
+      forced
+    };
+    room.othello = {
+      ...room.othello,
+      board,
+      passCount: 0,
+      rankedDelta,
+      pendingSettlement: pending,
+      surrenderRequest: undefined,
+      legalMoves: [],
+      ...othelloCounts(board)
+    };
+    room.resultText = forced === "tribute"
+      ? `${occupantName(room.seats[seat])} 触发强制上贡，正在结算...`
+      : forced === "giveaway"
+        ? `${occupantName(room.seats[seat])} 触发强制白给，正在结算...`
+        : `${occupantName(room.seats[seat])} 请在 10 秒内选择：不白给 / 白给 / 上贡。`;
+    if (player) refreshPlayerSnapshots(player);
+    if (opponent) refreshPlayerSnapshots(opponent);
+    scheduleOthelloSettlement(room);
+    return { ok: true };
+  }
   if (room.settings.enableRanked) {
-    const liveStake = flips.length * room.settings.stake * rankMultiplierFor(room.settings);
     const rankedResult = applyRankedStake(player, opponent, liveStake);
     rankedDelta[seat] += rankedResult.winnerDelta;
     rankedDelta[opponentSeat] += rankedResult.loserDelta;
   }
   if (player) refreshPlayerSnapshots(player);
   if (opponent) refreshPlayerSnapshots(opponent);
-  room.othello = { ...room.othello, board, passCount: 0, rankedDelta, ...othelloCounts(board) };
-  const nextTurn = othelloSeatForColor(room.othello, oppositeOthelloColor(color));
+  room.othello = { ...room.othello, board, passCount: 0, rankedDelta, surrenderRequest: undefined, ...othelloCounts(board) };
   advanceOthelloTurn(room, nextTurn, 0);
   return { ok: true };
 }
@@ -2000,7 +2166,7 @@ function roomNamePoolForSettings(settings: RoomSettings) {
 }
 
 function generatedRoomName(settings: RoomSettings) {
-  if (settings.gameId === "othello") return uniqueRoomName(defaultOthelloRoomName);
+  if (settings.gameId === "othello" && !settings.enablePunishment) return uniqueRoomName(defaultOthelloRoomName);
   const pool = roomNamePoolForSettings(settings);
   if (!pool) return settings.name?.trim() || defaultRoomName;
   const subject = randomFrom(pool.subjects);
@@ -2282,7 +2448,7 @@ function canLeaveRoom(player: PlayerState, reason: LeaveReason): LeaveResult {
   if (!room) return { ok: true };
   const isProtectedReason = reason === "manual" || reason === "switchRoom" || reason === "spectate";
   if (room.settings.gameId === "othello" && room.phase === "choosing" && seatOf(room, player.id) && isProtectedReason) {
-    return { ok: false, error: "黑白棋对局进行中不能离开战斗席，可以投降或等待对局结束" };
+    return { ok: false, error: "黑白棋对局进行中不能离开战斗席，可以申请认输、逃跑或等待对局结束" };
   }
   if (room.phase !== "punishment") return { ok: true };
   const isPunished = room.punishedPlayerIds.includes(player.id);
@@ -2755,12 +2921,6 @@ io.on("connection", (socket) => {
         normalizedSettings.othelloBoardTheme = "classic";
       }
       normalizedSettings.enableBot = false;
-      normalizedSettings.enablePunishment = false;
-      normalizedSettings.punishmentSource = "system";
-      normalizedSettings.punishmentIds = [];
-      normalizedSettings.punishmentId = undefined;
-      normalizedSettings.tieDoublePunish = false;
-      normalizedSettings.requireOpponentConfirm = false;
     } else if (![5, 10, 20].includes(normalizedSettings.stake)) {
       normalizedSettings.stake = 5;
     }
@@ -2986,23 +3146,106 @@ io.on("connection", (socket) => {
     reply?.({ ok: true });
   });
 
-  guardedOn(socket, "othello:surrender", { limit: 5, windowMs: 60_000, cooldownMs: 20_000 }, (_payload, reply) => {
+  guardedOn(socket, "othello:settleMove", { limit: 12, windowMs: 60_000, cooldownMs: 3_000 }, ({ mode }: { mode: "normal" | "giveaway" | "tribute" }, reply) => {
+    const player = getPlayer(socket.id);
+    const room = player?.roomId ? rooms.get(player.roomId) : undefined;
+    if (!player || !room) return reply?.({ error: "你不在房间中" });
+    if (room.settings.gameId !== "othello") return reply?.({ error: "当前房间不是黑白棋" });
+    if (mode !== "normal" && mode !== "giveaway" && mode !== "tribute") return reply?.({ error: "结算选择无效" });
+    const seat = seatOf(room, player.id);
+    if (!seat) return reply?.({ error: "只有战斗席玩家可以结算本手" });
+    const pending = room.othello?.pendingSettlement;
+    if (!pending) return reply?.({ error: "当前没有待结算落子" });
+    if (pending.seat !== seat) return reply?.({ error: "只能由本手落子玩家选择" });
+    if (pending.forced) return reply?.({ error: "本手已触发强制结算，不能改选" });
+    const result = settleOthelloPendingMove(room, mode, "choice");
+    if (!result.ok) return reply?.({ error: result.error });
+    reply?.({ ok: true });
+    broadcastRoom(room.id, true);
+    broadcastLobby();
+  });
+
+  function requestOthelloSurrender(reply?: (payload: unknown) => void) {
+    const player = getPlayer(socket.id);
+    const room = player?.roomId ? rooms.get(player.roomId) : undefined;
+    if (!player || !room) return reply?.({ error: "你不在房间中" });
+    if (room.settings.gameId !== "othello") return reply?.({ error: "当前房间不是黑白棋" });
+    const fromSeat = seatOf(room, player.id);
+    if (!fromSeat) return reply?.({ error: "只有战斗席玩家可以申请认输" });
+    if (!room.othello || room.phase !== "choosing" || room.othello.ended) return reply?.({ error: "当前不能申请认输" });
+    if (room.othello.pendingSettlement) return reply?.({ error: "本手白给/上贡结算完成前不能申请认输" });
+    const toSeat = oppositeSeat(fromSeat);
+    if (!room.seats[toSeat]) return reply?.({ error: "对手不在战斗席，不能申请认输" });
+    if (room.othello.surrenderRequest?.fromSeat === fromSeat) return reply?.({ error: "你已经申请认输，正在等待对方确认" });
+    if (room.othello.surrenderRequest) return reply?.({ error: "当前已有认输请求，请先处理" });
+    room.othello.surrenderRequest = { fromSeat, toSeat, createdAt: Date.now() };
+    roomNotice(room, `${playerShortName(player)} 申请认输，等待对方确认。`);
+    reply?.({ ok: true });
+    broadcastRoom(room.id, true);
+  }
+
+  guardedOn(socket, "othello:requestSurrender", { limit: 5, windowMs: 60_000, cooldownMs: 8_000 }, (_payload, reply) => {
+    requestOthelloSurrender(reply);
+  });
+
+  guardedOn(socket, "othello:surrender", { limit: 5, windowMs: 60_000, cooldownMs: 8_000 }, (_payload, reply) => {
+    requestOthelloSurrender(reply);
+  });
+
+  guardedOn(socket, "othello:respondSurrender", { limit: 8, windowMs: 60_000, cooldownMs: 5_000 }, ({ accept }: { accept?: boolean }, reply) => {
+    const player = getPlayer(socket.id);
+    const room = player?.roomId ? rooms.get(player.roomId) : undefined;
+    if (!player || !room) return reply?.({ error: "你不在房间中" });
+    if (room.settings.gameId !== "othello") return reply?.({ error: "当前房间不是黑白棋" });
+    const seat = seatOf(room, player.id);
+    if (!seat) return reply?.({ error: "只有战斗席玩家可以处理认输请求" });
+    if (!room.othello || room.phase !== "choosing" || room.othello.ended) return reply?.({ error: "当前不能处理认输请求" });
+    const request = room.othello.surrenderRequest;
+    if (!request) return reply?.({ error: "当前没有认输请求" });
+    if (request.toSeat !== seat) return reply?.({ error: "这个认输请求不是发给你的" });
+    const loserSeat = request.fromSeat;
+    const winnerSeat = request.toSeat;
+    const loserName = occupantName(room.seats[loserSeat]);
+    const winnerName = occupantName(room.seats[winnerSeat]);
+    if (!accept) {
+      room.othello.surrenderRequest = undefined;
+      roomNotice(room, `${winnerName} 拒绝认输，对局继续。`);
+      reply?.({ ok: true });
+      broadcastRoom(room.id, true);
+      return;
+    }
+    const result = forceEndOthelloGame(room, winnerSeat, {
+      label: `${loserName}认输，${winnerName}胜利`,
+      historyNote: "认输",
+      notice: `${winnerName} 同意 ${loserName} 认输，本局结束。`,
+      forfeitRankedFloor: true
+    });
+    if (!result.ok) return reply?.({ error: result.error });
+    reply?.({ ok: true });
+    broadcastRoom(room.id, true);
+    broadcastLobby();
+  });
+
+  guardedOn(socket, "othello:escape", { limit: 3, windowMs: 60_000, cooldownMs: 20_000 }, (_payload, reply) => {
     const player = getPlayer(socket.id);
     const room = player?.roomId ? rooms.get(player.roomId) : undefined;
     if (!player || !room) return reply?.({ error: "你不在房间中" });
     if (room.settings.gameId !== "othello") return reply?.({ error: "当前房间不是黑白棋" });
     const loserSeat = seatOf(room, player.id);
-    if (!loserSeat) return reply?.({ error: "只有战斗席玩家可以认输" });
-    if (!room.othello || room.phase !== "choosing" || room.othello.ended) return reply?.({ error: "当前不能认输" });
-    const winnerSeat = loserSeat === "A" ? "B" : "A";
-    if (!room.seats[winnerSeat]) return reply?.({ error: "对手不在战斗席，不能认输" });
-    const winnerName = occupantName(room.seats[winnerSeat]);
+    if (!loserSeat) return reply?.({ error: "只有战斗席玩家可以逃跑" });
+    if (!room.othello || room.phase !== "choosing" || room.othello.ended) return reply?.({ error: "当前不能逃跑" });
+    if (room.othello.pendingSettlement) return reply?.({ error: "本手白给/上贡结算完成前不能逃跑" });
+    const winnerSeat = oppositeSeat(loserSeat);
+    if (!room.seats[winnerSeat]) return reply?.({ error: "对手不在战斗席，不能逃跑" });
     const loserName = playerShortName(player);
+    const winnerName = occupantName(room.seats[winnerSeat]);
     const result = forceEndOthelloGame(room, winnerSeat, {
-      label: `${loserName}认输，${winnerName}胜利`,
-      historyNote: "认输",
-      notice: `${loserName} 选择认输，${winnerName} 获胜。`,
-      forfeitRankedFloor: true
+      label: `${loserName}逃跑，${winnerName}胜利`,
+      historyNote: "逃跑",
+      notice: `${loserName} 选择逃跑，本局立即判负。`,
+      forfeitRankedFloor: true,
+      escapePenaltyRatio: 0.5,
+      escapePenaltyLabel: "逃跑"
     });
     if (!result.ok) return reply?.({ error: result.error });
     reply?.({ ok: true });
@@ -3017,6 +3260,7 @@ io.on("connection", (socket) => {
     if (room.settings.gameId !== "othello") return reply?.({ error: "当前房间不是黑白棋" });
     if (!seatOf(room, player.id)) return reply?.({ error: "只有战斗席玩家可以重新开始" });
     if (!room.seats.A || !room.seats.B) return reply?.({ error: "需要双方都坐下才能重新开始" });
+    if (room.phase === "punishment") return reply?.({ error: "惩罚完成前不能重新开始" });
     resetOthelloRoom(room);
     roomNotice(room, `${playerShortName(player)} 发起黑白棋再来一局，请双方准备。`);
     broadcastRoom(room.id, true);
@@ -3236,6 +3480,7 @@ io.on("connection", (socket) => {
         const botTimer = botTimers.get(roomId);
         if (botTimer) clearTimeout(botTimer);
         botTimers.delete(roomId);
+        clearOthelloSettlementTimer(roomId);
         rooms.delete(roomId);
         roomDeleted = true;
       }
@@ -3251,6 +3496,7 @@ io.on("connection", (socket) => {
     if (action === "forceOthelloRestart" && roomId) {
       const room = rooms.get(roomId);
       if (!room || room.settings.gameId !== "othello") return reply?.({ error: "当前房间不是黑白棋房间" });
+      flushOthelloPendingSettlement(room);
       resetOthelloRoom(room);
       roomNotice(room, "管理员已重开黑白棋对局。");
     }

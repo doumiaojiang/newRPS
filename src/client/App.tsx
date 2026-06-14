@@ -1,4 +1,4 @@
-import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MutableRefObject, useEffect, useRef, useState } from "react";
 import { Crown, DoorOpen, Download, Eye, MessageCircle, Moon, Pencil, RefreshCcw, Save, Settings, Shield, Sun, Swords, Upload, UserRound, Users } from "lucide-react";
 import { socket } from "./main";
 import type { AppConfig, BotDifficulty, ChatMessage, GenderFaction, LobbySnapshot, Move, PublicPlayer, PunishmentTaskConfig, RoomInfoTagStyle, RoomNamePool, RoomSettings, RoomSnapshot, RoundResult, SeatKey, SeatOccupant } from "../shared/types";
@@ -79,6 +79,13 @@ function scrollToBottomSoon(element: HTMLElement) {
   window.requestAnimationFrame(() => {
     element.scrollTop = element.scrollHeight;
   });
+}
+
+function stickChatToBottom(element: HTMLElement | null, stickRef: MutableRefObject<boolean>, setSticking: (value: boolean) => void) {
+  if (!element) return;
+  stickRef.current = true;
+  setSticking(true);
+  scrollToBottomSoon(element);
 }
 
 async function compressImageForUpload(file: File) {
@@ -544,6 +551,7 @@ function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lo
   const [suggestion, setSuggestion] = useState("");
   const suggestionListRef = useRef<HTMLDivElement | null>(null);
   const suggestionStickToBottomRef = useRef(true);
+  const [suggestionStickToBottom, setSuggestionStickToBottom] = useState(true);
   const visibleSuggestions = lobby.suggestions.slice(0, 50).reverse();
   const [now, setNow] = useState(Date.now());
   const renameTargets = lobby.players.filter((player) => isRenameTargetVisible(player, now));
@@ -637,9 +645,25 @@ function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lo
         <Leaderboard title="在线积分榜" players={lobby.rankedLeaderboard} />
         <div className="panel lobby-message-board">
           <h2><MessageCircle size={18} /> 留言板</h2>
-          <div className="messages lobby-suggestion-messages" ref={suggestionListRef} onScroll={(event) => { suggestionStickToBottomRef.current = isNearScrollBottom(event.currentTarget); }}>
-            {visibleSuggestions.map((item) => <ChatBubble key={item.id} message={suggestionToMessage(item)} me={me} />)}
-            {lobby.suggestions.length === 0 && <p className="empty">还没有留言</p>}
+          <div className="chat-scroll-shell">
+            <div
+              className="messages lobby-suggestion-messages"
+              ref={suggestionListRef}
+              onScroll={(event) => {
+                const nextStick = isNearScrollBottom(event.currentTarget);
+                if (suggestionStickToBottomRef.current === nextStick) return;
+                suggestionStickToBottomRef.current = nextStick;
+                setSuggestionStickToBottom(nextStick);
+              }}
+            >
+              {visibleSuggestions.map((item) => <ChatBubble key={item.id} message={suggestionToMessage(item)} me={me} />)}
+              {lobby.suggestions.length === 0 && <p className="empty">还没有留言</p>}
+            </div>
+            {!suggestionStickToBottom && visibleSuggestions.length > 0 && (
+              <button type="button" className="chat-stick-button" onClick={() => stickChatToBottom(suggestionListRef.current, suggestionStickToBottomRef, setSuggestionStickToBottom)}>
+                ↓ 回到底部
+              </button>
+            )}
           </div>
           <div className="send-row">
             <input value={suggestion} onChange={(event) => setSuggestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") sendSuggestion(); }} placeholder="写下建议、bug 或新惩罚..." />
@@ -719,12 +743,6 @@ function patch(next: Partial<RoomSettings>) {
       if (next.gameId === "othello" || merged.gameId === "othello") {
         merged.othelloBoardTheme = merged.othelloBoardTheme || "classic";
         merged.enableBot = false;
-        merged.enablePunishment = false;
-        merged.punishmentSource = "system";
-        merged.punishmentIds = [];
-        merged.punishmentId = undefined;
-        merged.tieDoublePunish = false;
-        merged.requireOpponentConfirm = false;
       }
       if (next.punishmentSource === "player") {
         merged.enablePunishment = true;
@@ -765,12 +783,6 @@ function patch(next: Partial<RoomSettings>) {
       if (merged.gameId === "othello") {
         if (!([1, 2, 5, 10] as const).includes(merged.stake as 1 | 2 | 5 | 10)) merged.stake = 5;
         merged.enableBot = false;
-        merged.enablePunishment = false;
-        merged.punishmentSource = "system";
-        merged.punishmentIds = [];
-        merged.punishmentId = undefined;
-        merged.tieDoublePunish = false;
-        merged.requireOpponentConfirm = false;
         if (merged.enableExtremeRanked) {
           merged.enableRankMultiplier = false;
           merged.rankMultiplier = 1;
@@ -855,7 +867,7 @@ function patch(next: Partial<RoomSettings>) {
                 </button>
               ))}
             </div>
-            {settings.gameId === "othello" && <p className="hint">黑白棋支持真人 1v1、观战、聊天和普通排位；Bot、惩罚、倍率、极限模式会自动关闭。</p>}
+            {settings.gameId === "othello" && <p className="hint">黑白棋支持真人 1v1、观战、聊天、排位和惩罚；Bot 不开放，排位房会支持白给/上贡结算。</p>}
             {settings.gameId === "othello" && (
               <div className="othello-theme-grid">
                 {othelloBoardThemes.map((theme) => (
@@ -988,8 +1000,8 @@ function patch(next: Partial<RoomSettings>) {
           </div>
           <div className="create-section">
             <h3>惩罚</h3>
-            <Toggle label="惩罚模式" value={settings.enablePunishment} disabled={settings.gameId === "othello"} onChange={(value) => patch({ enablePunishment: value })} />
-            {settings.gameId === "othello" && <p className="hint">黑白棋 V1 暂不支持惩罚模式。</p>}
+            <Toggle label="惩罚模式" value={settings.enablePunishment} onChange={(value) => patch({ enablePunishment: value })} />
+            {settings.gameId === "othello" && <p className="hint">黑白棋惩罚会在终局、认输、逃跑或断线判负后触发；平局双罚开启时黑白棋平局双方都要惩罚。</p>}
             {settings.enablePunishment && (
               <>
                 <Select value={settings.punishmentSource || "system"} onChange={(value) => patch({ punishmentSource: value as RoomSettings["punishmentSource"] })} options={[
@@ -1048,7 +1060,7 @@ function patch(next: Partial<RoomSettings>) {
 }
 
 function generateRoomName(config: AppConfig, settings: RoomSettings) {
-  if (settings.gameId === "othello") return defaultOthelloRoomName;
+  if (settings.gameId === "othello" && !settings.enablePunishment) return defaultOthelloRoomName;
   const pool = settings.punishmentSource === "player"
     ? config.playerPunishmentRoomNamePool
     : primaryPunishmentForSettings(config, settings)?.roomNamePool;
@@ -1173,6 +1185,7 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
   const [extraHistory, setExtraHistory] = useState<RoomSnapshot["roundHistory"]>([]);
   const chatListRef = useRef<HTMLDivElement | null>(null);
   const chatStickToBottomRef = useRef(true);
+  const [chatStickToBottom, setChatStickToBottom] = useState(true);
   const mySeat = room.seats.A?.id === me.id ? "A" : room.seats.B?.id === me.id ? "B" : null;
   const myChoice = mySeat ? room.phase === "result" ? undefined : localChoice || room.choices[mySeat] : undefined;
   const resultChoice = mySeat ? room.revealedChoices?.[mySeat] : undefined;
@@ -1215,6 +1228,12 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
     if (list && chatStickToBottomRef.current) scrollToBottomSoon(list);
   }, [displayedChatMessages.length, chatTab]);
 
+  useEffect(() => {
+    chatStickToBottomRef.current = true;
+    setChatStickToBottom(true);
+    if (chatListRef.current) scrollToBottomSoon(chatListRef.current);
+  }, [chatTab]);
+
   async function act(event: string, payload: unknown = {}) {
     try {
       await ask(event, payload);
@@ -1253,6 +1272,14 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
     }
   }
 
+  async function settleOthelloMove(mode: "normal" | "giveaway" | "tribute") {
+    try {
+      await ask("othello:settleMove", { mode });
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "结算失败");
+    }
+  }
+
   async function restartOthello() {
     try {
       await ask("othello:restart", {});
@@ -1269,12 +1296,28 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
     }
   }
 
-  async function surrenderOthello() {
-    if (!window.confirm("确定要认输吗？本局会立即判对方胜利。")) return;
+  async function requestOthelloSurrender() {
     try {
-      await ask("othello:surrender", {});
+      await ask("othello:requestSurrender", {});
     } catch (error) {
-      onError(error instanceof Error ? error.message : "认输失败");
+      onError(error instanceof Error ? error.message : "申请认输失败");
+    }
+  }
+
+  async function respondOthelloSurrender(accept: boolean) {
+    try {
+      await ask("othello:respondSurrender", { accept });
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "处理认输失败");
+    }
+  }
+
+  async function escapeOthello() {
+    if (!window.confirm("确定要逃跑吗？本局会立即判负，并按剩余空格追加扣分。")) return;
+    try {
+      await ask("othello:escape", {});
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "逃跑失败");
     }
   }
 
@@ -1369,7 +1412,7 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
       <div className="room-content-grid">
         <div className="actions-panel panel">
           {room.settings.gameId === "othello" ? (
-            <OthelloPanel room={room} me={me} onMove={playOthello} onRestart={restartOthello} onReady={readyOthello} onSurrender={surrenderOthello} />
+            <OthelloPanel room={room} me={me} now={now} onMove={playOthello} onSettle={settleOthelloMove} onRestart={restartOthello} onReady={readyOthello} onRequestSurrender={requestOthelloSurrender} onRespondSurrender={respondOthelloSurrender} onEscape={escapeOthello} />
           ) : mySeat && (
             <div className="move-panel">
               <div>
@@ -1385,7 +1428,7 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
             </div>
           )}
           {canGoSpectate && <button onClick={() => act("room:spectate")}><Eye size={16} /> 去观战席</button>}
-          {room.settings.gameId === "rps" && room.phase === "punishment" && (
+          {room.phase === "punishment" && (
             <div className="punish-box">
               <div className="punish-head">
                 <span>🎲 惩罚阶段</span>
@@ -1445,6 +1488,7 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
                         <div className="proof-submit-card">
                           <b>{proof?.status === "rejected" ? "重新提交证明" : "提交完成证明"}</b>
                           <textarea value={proofText} onChange={(event) => setProofText(event.target.value)} placeholder={proof?.status === "rejected" ? "重新提交你的惩罚完成证明" : "写下你的惩罚完成证明"} />
+                          <p className="hint">文字证明必须填写；照片证明可以不交。</p>
                           {room.settings.allowProofImage !== false ? (
                             <>
                               <label className="upload">
@@ -1496,9 +1540,25 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
                 <button className={chatTab === "lobby" ? "active" : ""} onClick={() => setChatTab("lobby")}>大厅</button>
               </div>
             </div>
-            <div className="messages room-chat-messages" ref={chatListRef} onScroll={(event) => { chatStickToBottomRef.current = isNearScrollBottom(event.currentTarget); }}>
-              {displayedChatMessages.map((item) => <ChatBubble key={item.id} message={item} me={me} />)}
-              {displayedChatMessages.length === 0 && <p className="empty">{chatTab === "room" ? "还没有房间聊天" : "大厅还没有留言"}</p>}
+            <div className="chat-scroll-shell">
+              <div
+                className="messages room-chat-messages"
+                ref={chatListRef}
+                onScroll={(event) => {
+                  const nextStick = isNearScrollBottom(event.currentTarget);
+                  if (chatStickToBottomRef.current === nextStick) return;
+                  chatStickToBottomRef.current = nextStick;
+                  setChatStickToBottom(nextStick);
+                }}
+              >
+                {displayedChatMessages.map((item) => <ChatBubble key={item.id} message={item} me={me} />)}
+                {displayedChatMessages.length === 0 && <p className="empty">{chatTab === "room" ? "还没有房间聊天" : "大厅还没有留言"}</p>}
+              </div>
+              {!chatStickToBottom && displayedChatMessages.length > 0 && (
+                <button type="button" className="chat-stick-button" onClick={() => stickChatToBottom(chatListRef.current, chatStickToBottomRef, setChatStickToBottom)}>
+                  ↓ 回到底部
+                </button>
+              )}
             </div>
             {chatTab === "room" ? (
               <div className="send-row">
@@ -1548,17 +1608,22 @@ function OthelloScore({ room }: { room: RoomSnapshot }) {
   );
 }
 
-function OthelloPanel({ room, me, onMove, onRestart, onReady, onSurrender }: { room: RoomSnapshot; me: PublicPlayer; onMove: (row: number, col: number) => void; onRestart: () => void; onReady: () => void; onSurrender: () => void }) {
+function OthelloPanel({ room, me, now, onMove, onSettle, onRestart, onReady, onRequestSurrender, onRespondSurrender, onEscape }: { room: RoomSnapshot; me: PublicPlayer; now: number; onMove: (row: number, col: number) => void; onSettle: (mode: "normal" | "giveaway" | "tribute") => void; onRestart: () => void; onReady: () => void; onRequestSurrender: () => void; onRespondSurrender: (accept: boolean) => void; onEscape: () => void }) {
   const state = room.othello;
   const boardTheme = othelloThemeStyle(room.settings.othelloBoardTheme);
   const mySeat = room.seats.A?.id === me.id ? "A" : room.seats.B?.id === me.id ? "B" : null;
-  const isMyTurn = Boolean(state && mySeat && state.turn === mySeat && room.phase === "choosing" && !state.ended);
+  const pending = state?.pendingSettlement;
+  const isMyTurn = Boolean(state && mySeat && state.turn === mySeat && room.phase === "choosing" && !state.ended && !pending);
   const legalKeys = new Set((state?.legalMoves || []).map((move) => `${move.row}-${move.col}`));
   const turnName = state?.turn === "A" ? occupantDisplay(room.seats.A) : occupantDisplay(room.seats.B);
   const waitingForReady = room.phase === "ready" && Boolean(room.seats.A && room.seats.B);
   const drawingFirst = waitingForReady && room.ready.A && room.ready.B;
   const myReady = mySeat ? room.ready[mySeat] : false;
-  const canSurrender = Boolean(mySeat && state && room.phase === "choosing" && !state.ended);
+  const canSurrender = Boolean(mySeat && state && room.phase === "choosing" && !state.ended && !pending);
+  const surrenderRequest = state?.surrenderRequest;
+  const surrenderFromMe = Boolean(mySeat && surrenderRequest?.fromSeat === mySeat);
+  const surrenderToMe = Boolean(mySeat && surrenderRequest?.toSeat === mySeat);
+  const surrenderFromName = surrenderRequest ? occupantDisplay(room.seats[surrenderRequest.fromSeat]) : "";
   const blackSeat = state?.blackSeat;
   const whiteSeat = blackSeat ? (blackSeat === "A" ? "B" : "A") : null;
   return (
@@ -1575,7 +1640,7 @@ function OthelloPanel({ room, me, onMove, onRestart, onReady, onSurrender }: { r
                   ? "双方准备后随机决定谁执黑先手。"
                   : state?.ended
                     ? room.resultText || "对局结束"
-                    : isMyTurn ? "轮到你落子。" : `轮到 ${turnName} 落子。`}
+                    : pending ? "正在结算本手白给/上贡。" : isMyTurn ? "轮到你落子。" : `轮到 ${turnName} 落子。`}
           </p>
         </div>
         {state && (
@@ -1601,11 +1666,39 @@ function OthelloPanel({ room, me, onMove, onRestart, onReady, onSurrender }: { r
           {mySeat && myReady && !drawingFirst && <button disabled>等待对方</button>}
         </div>
       )}
-      {state?.ended && mySeat && <button className="primary othello-restart-button" onClick={onRestart}>再来一局</button>}
+      {state?.ended && mySeat && room.phase === "result" && <button className="primary othello-restart-button" onClick={onRestart}>再来一局</button>}
+      {canSurrender && surrenderRequest && (
+        <div className={`othello-surrender-card ${surrenderToMe ? "needs-action" : ""}`}>
+          <div>
+            <strong>{surrenderFromMe ? "已申请认输" : `${surrenderFromName} 申请认输`}</strong>
+            <p className="hint">{surrenderFromMe ? "等待对方确认；对局状态会保持不变。" : "你可以同意结束本局，或拒绝后继续下棋。"}</p>
+          </div>
+          {surrenderToMe && (
+            <div className="othello-surrender-actions">
+              <button className="primary" onClick={() => onRespondSurrender(true)}>同意认输</button>
+              <button className="soft-button" onClick={() => onRespondSurrender(false)}>拒绝，继续下棋</button>
+            </div>
+          )}
+        </div>
+      )}
       {canSurrender && (
-        <button className="soft-button danger-soft othello-surrender-button" onClick={onSurrender}>
-          投降 / 认输
-        </button>
+        <div className="othello-risk-actions">
+          <button className="soft-button othello-surrender-button" disabled={Boolean(surrenderRequest)} onClick={onRequestSurrender}>
+            申请认输
+          </button>
+          <button className="soft-button danger-soft othello-surrender-button" onClick={onEscape}>
+            逃跑
+          </button>
+        </div>
+      )}
+      {pending && (
+        <OthelloSettlementCard
+          room={room}
+          me={me}
+          pending={pending}
+          now={now}
+          onSettle={onSettle}
+        />
       )}
       <div className="othello-board" role="grid" aria-label="黑白棋棋盘" style={boardTheme}>
         {(state?.board || Array.from({ length: 8 }, () => Array.from({ length: 8 }, () => null))).map((row, rowIndex) => row.map((cell, colIndex) => {
@@ -1649,6 +1742,40 @@ function othelloDeltaText(state: NonNullable<RoomSnapshot["othello"]>, color: "b
   const seat = color === "black" ? state.blackSeat : state.blackSeat === "A" ? "B" : "A";
   const delta = state.rankedDelta?.[seat] || 0;
   return `${delta >= 0 ? "+" : ""}${delta}`;
+}
+
+function OthelloSettlementCard({ room, me, pending, now, onSettle }: { room: RoomSnapshot; me: PublicPlayer; pending: NonNullable<NonNullable<RoomSnapshot["othello"]>["pendingSettlement"]>; now: number; onSettle: (mode: "normal" | "giveaway" | "tribute") => void }) {
+  const isMine = room.seats[pending.seat]?.id === me.id;
+  const actorName = occupantDisplay(room.seats[pending.seat]);
+  const opponentName = occupantDisplay(room.seats[pending.opponentSeat]);
+  const secondsLeft = Math.max(0, Math.ceil((pending.expiresAt - now) / 1000));
+  const forcedText = pending.forced === "tribute" ? "强制上贡" : pending.forced === "giveaway" ? "强制白给" : "";
+  return (
+    <div className={`othello-settlement-card ${pending.forced ? "forced" : ""}`}>
+      <div>
+        <strong>{pending.forced ? forcedText : isMine ? "选择本手结算" : "等待本手结算"}</strong>
+        <p className="hint">
+          {actorName} 本手翻 {pending.flips} 子，基础分 {pending.stake}。
+          {pending.forced ? ` ${forcedText}将在 ${secondsLeft} 秒后自动结算。` : isMine ? ` ${secondsLeft} 秒后自动选择不白给。` : ` 等待 ${actorName} 选择，${secondsLeft} 秒后默认不白给。`}
+        </p>
+      </div>
+      {pending.forced ? (
+        <div className="othello-settlement-forced">
+          <span>{pending.forced === "tribute" ? "🎁 上贡给对方" : "🫴 白给本手"}</span>
+        </div>
+      ) : isMine ? (
+        <div className="othello-settlement-actions">
+          <button className="primary" onClick={() => onSettle("normal")}>不白给</button>
+          <button className="soft-button" onClick={() => onSettle("giveaway")}>白给 +{formatGiveawayValue(pending.flips * 0.1)}%</button>
+          <button className="soft-button danger-soft" onClick={() => onSettle("tribute")}>上贡给 {opponentName} +{formatGiveawayValue(pending.flips * 0.2)}%</button>
+        </div>
+      ) : (
+        <div className="othello-settlement-forced">
+          <span>⏳ 等待选择</span>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function occupantDisplay(occupant: SeatOccupant) {
@@ -1918,10 +2045,10 @@ function historyResultText(result: RoundResult) {
 
 type RoomInfoTagView = { key: string; text: string; style: RoomInfoTagStyle };
 
-function roomInfoTag(config: AppConfig, key: string, extra = ""): RoomInfoTagView {
+function roomInfoTag(config: AppConfig, key: string, extra = "", prefix = ""): RoomInfoTagView {
   const fallback: RoomInfoTagStyle = { label: key, textColor: "#4d5c6f", backgroundColor: "#eef3f8", borderColor: "#c9d6e4" };
   const style = config.roomInfoTags?.[key] || fallback;
-  return { key: `${key}-${extra}`, text: `${style.label}${extra}`, style };
+  return { key: `${key}-${extra}`, text: `${prefix}${style.label}${extra}`, style };
 }
 
 function punishmentInfoTag(config: AppConfig, room: RoomSnapshot) {
@@ -1974,14 +2101,9 @@ function lobbyRoomInfoTags(config: AppConfig, room: LobbySnapshot["rooms"][numbe
 }
 
 function gameInfoTag(config: AppConfig, gameId: RoomSettings["gameId"]) {
-  const game = config.games.find((item) => item.id === gameId);
-  return {
-    key: `game-${gameId}`,
-    text: gameId === "othello" ? `⚫⚪ ${game?.name || "黑白棋"}` : game?.name || "锤子剪刀布",
-    style: gameId === "othello"
-      ? { label: "黑白棋", textColor: "#163c32", backgroundColor: "#dff7ec", borderColor: "#93d8b8" }
-      : { label: "锤子剪刀布", textColor: "#4d5c6f", backgroundColor: "#eef3f8", borderColor: "#c9d6e4" }
-  };
+  return gameId === "othello"
+    ? roomInfoTag(config, "gameOthello", "", "⚫⚪ ")
+    : roomInfoTag(config, "gameRps");
 }
 
 function punishmentSelectionText(config: AppConfig, settings: Pick<RoomSettings, "punishmentId" | "punishmentIds">) {
@@ -2579,8 +2701,9 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
               <small>{me.giveawayEnabled ? `${formatGiveawayValue(giveawayValue)}%` : "未开启"}</small>
             </div>
             <Toggle label="开启白给模式" value={giveawayEnabled} disabled={giveawayCannotClose} onChange={setGiveawayEnabled} />
-            <p className="hint">开启后，真人对战会按白给值概率触发强制白给；Bot 对战不显示按钮，也不会触发。</p>
+            <p className="hint">开启后，锤子剪刀布真人对战会按白给值概率触发强制白给；黑白棋排位落子后可选择不白给、白给或上贡。</p>
             <p className="hint">出拳区点击“白给”会让白给值 +2%，触发强制白给后也会 +2%，最高 100%。</p>
+            <p className="hint">黑白棋白给会让本手翻子不结算排位分并按 0.1%/子增加白给值；上贡会把本手分数给对面并按 0.2%/子增加白给值。</p>
             <p className="hint">白给值归零后，才可以关闭这个模式。可以在大厅的白给自救板提交宣言，等待其他玩家点赞帮你降低。</p>
             {giveawayCannotClose && <p className="hint danger-hint">当前还有 {formatGiveawayValue(giveawayValue)}% 白给值，暂时不能关闭。</p>}
           </div>
@@ -2614,8 +2737,11 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
 }
 
 type AdminSection = "site" | "factions" | "titles" | "punishments" | "roomTags" | "roomInfoTags" | "nameWar" | "giveaway" | "extremeMode" | "accessControl" | "bots" | "messages" | "actions" | "advanced";
+type AdminActionTab = "online" | "offline" | "rooms" | "announcement";
 
 const roomInfoTagOrder = [
+  { key: "gameRps", label: "锤子剪刀布" },
+  { key: "gameOthello", label: "黑白棋" },
   { key: "phaseReady", label: "等待坐满" },
   { key: "phaseChoosing", label: "出拳中" },
   { key: "phaseResult", label: "结算中" },
@@ -2648,6 +2774,7 @@ function AdminPanel({ config, lobby, onBack, onError }: { config: AppConfig; lob
   const [punishmentSearch, setPunishmentSearch] = useState("");
   const [announcementMessage, setAnnouncementMessage] = useState("");
   const [announcementSeconds, setAnnouncementSeconds] = useState("8");
+  const [activeActionTab, setActiveActionTab] = useState<AdminActionTab>("online");
   const [configText, setConfigText] = useState(JSON.stringify(config, null, 2));
   const [dirty, setDirty] = useState(false);
   const [serverConfigChanged, setServerConfigChanged] = useState(false);
@@ -3429,74 +3556,105 @@ function AdminPanel({ config, lobby, onBack, onError }: { config: AppConfig; lob
             <p>最近房间快照 {formatBytes(stats.lastRoomSnapshotBytes)} · 最近大厅快照 {formatBytes(stats.lastLobbySnapshotBytes)}</p>
             <p>平均快照：房间 {formatBytes(stats.averageRoomSnapshotBytes)} · 大厅 {formatBytes(stats.averageLobbySnapshotBytes)}</p>
           </div>
-          <div className="admin-action-row">
-            <button className="danger-button" onClick={() => action("clearSuggestions")}>清空留言板</button>
-            <button className="danger-button" onClick={() => action("clearLobbyChat")}>清空大厅聊天</button>
-          </div>
-          <div className="admin-announcement-card">
-            <div className="admin-card-title">
-              <strong>发送全服公告</strong>
-              <small>当前在线玩家和后台页面会立即弹出</small>
-            </div>
-            <textarea
-              value={announcementMessage}
-              maxLength={200}
-              onChange={(event) => setAnnouncementMessage(event.target.value)}
-              placeholder="输入公告内容，最多 200 字"
-            />
-            <div className="admin-announcement-actions">
-              <label className="field-label">
-                <span>显示秒数</span>
-                <input type="number" min={3} max={60} value={announcementSeconds} onChange={(event) => setAnnouncementSeconds(event.target.value)} />
-              </label>
-              <button className="primary" onClick={sendAnnouncement}>发送公告</button>
-            </div>
-          </div>
-          <div className="admin-list-section">
-            <div className="admin-list-heading">
-              <h3>在线玩家</h3>
-              <span>{onlinePlayers.length} 人</span>
-            </div>
-            {onlinePlayers.map((player) => (
-              <AdminPlayerEditor key={player.id} player={player} onSave={(payload) => action("editPlayer", payload)} onKick={() => action("kick", { playerId: player.id })} />
+          <div className="admin-action-tabs">
+            {[
+              { id: "online", label: "在线", count: onlinePlayers.length },
+              { id: "offline", label: "离线", count: offlinePlayers.length },
+              { id: "rooms", label: "房间", count: lobby.rooms.length },
+              { id: "announcement", label: "公告", count: 0 }
+            ].map((tab) => (
+              <button
+                type="button"
+                className={activeActionTab === tab.id ? "active" : ""}
+                key={tab.id}
+                onClick={() => setActiveActionTab(tab.id as AdminActionTab)}
+              >
+                <span>{tab.label}</span>
+                {tab.count > 0 && <em>{tab.count}</em>}
+              </button>
             ))}
-            {onlinePlayers.length === 0 && <p className="empty">当前没有在线玩家</p>}
           </div>
-          <div className="admin-list-section">
-            <div className="admin-list-heading">
-              <h3>离线玩家</h3>
-              <span>{offlinePlayers.length} 人</span>
-            </div>
-            {offlinePlayers.map((player) => (
-              <AdminPlayerEditor key={player.id} player={player} onSave={(payload) => action("editPlayer", payload)} onKick={() => action("kick", { playerId: player.id })} />
-            ))}
-            {offlinePlayers.length === 0 && <p className="empty">当前没有离线保留玩家</p>}
-          </div>
-          <div className="admin-list-section">
-            <h3>房间管理</h3>
-            {lobby.rooms.map((room) => (
-              <div className="admin-room" key={room.id}>
-                <div className="admin-card-title">
-                  <strong>{room.name}</strong>
-                  <small>{room.code} · {room.status} · {room.players}/2 战斗席 · {room.spectators} 观战</small>
-                </div>
-                <div className="admin-action-row">
-                  <button className="danger-button" onClick={() => action("closeRoom", { roomId: room.id })}>关闭房间</button>
-                  <button onClick={() => action("clearRoomChat", { roomId: room.id })}>清空房间聊天</button>
-                  <button onClick={() => action("forceNext", { roomId: room.id })}>强制下一局</button>
-                </div>
-                {room.gameId === "othello" && (
-                  <div className="admin-action-row othello-admin-actions">
-                    <button onClick={() => action("forceOthelloRestart", { roomId: room.id })}>黑白棋重开</button>
-                    <button onClick={() => action("forceOthelloEnd", { roomId: room.id, othelloResult: "A" })}>判黑方胜</button>
-                    <button onClick={() => action("forceOthelloEnd", { roomId: room.id, othelloResult: "B" })}>判白方胜</button>
-                    <button onClick={() => action("forceOthelloEnd", { roomId: room.id, othelloResult: "draw" })}>判平局</button>
-                  </div>
-                )}
+          {activeActionTab === "announcement" && (
+            <>
+              <div className="admin-action-row">
+                <button className="danger-button" onClick={() => action("clearSuggestions")}>清空留言板</button>
+                <button className="danger-button" onClick={() => action("clearLobbyChat")}>清空大厅聊天</button>
               </div>
-            ))}
-            {lobby.rooms.length === 0 && <p className="empty">暂无房间</p>}
-          </div>
+              <div className="admin-announcement-card">
+                <div className="admin-card-title">
+                  <strong>发送全服公告</strong>
+                  <small>当前在线玩家和后台页面会立即弹出</small>
+                </div>
+                <textarea
+                  value={announcementMessage}
+                  maxLength={200}
+                  onChange={(event) => setAnnouncementMessage(event.target.value)}
+                  placeholder="输入公告内容，最多 200 字"
+                />
+                <div className="admin-announcement-actions">
+                  <label className="field-label">
+                    <span>显示秒数</span>
+                    <input type="number" min={3} max={60} value={announcementSeconds} onChange={(event) => setAnnouncementSeconds(event.target.value)} />
+                  </label>
+                  <button className="primary" onClick={sendAnnouncement}>发送公告</button>
+                </div>
+              </div>
+            </>
+          )}
+          {activeActionTab === "online" && (
+            <div className="admin-list-section">
+              <div className="admin-list-heading">
+                <h3>在线玩家</h3>
+                <span>{onlinePlayers.length} 人</span>
+              </div>
+              {onlinePlayers.map((player) => (
+                <AdminPlayerEditor key={player.id} player={player} onSave={(payload) => action("editPlayer", payload)} onKick={() => action("kick", { playerId: player.id })} />
+              ))}
+              {onlinePlayers.length === 0 && <p className="empty">当前没有在线玩家</p>}
+            </div>
+          )}
+          {activeActionTab === "offline" && (
+            <div className="admin-list-section">
+              <div className="admin-list-heading">
+                <h3>离线玩家</h3>
+                <span>{offlinePlayers.length} 人</span>
+              </div>
+              {offlinePlayers.map((player) => (
+                <AdminPlayerEditor key={player.id} player={player} onSave={(payload) => action("editPlayer", payload)} onKick={() => action("kick", { playerId: player.id })} />
+              ))}
+              {offlinePlayers.length === 0 && <p className="empty">当前没有离线保留玩家</p>}
+            </div>
+          )}
+          {activeActionTab === "rooms" && (
+            <div className="admin-list-section">
+              <div className="admin-list-heading">
+                <h3>房间管理</h3>
+                <span>{lobby.rooms.length} 间</span>
+              </div>
+              {lobby.rooms.map((room) => (
+                <div className="admin-room" key={room.id}>
+                  <div className="admin-card-title">
+                    <strong>{room.name}</strong>
+                    <small>{room.code} · {room.status} · {room.players}/2 战斗席 · {room.spectators} 观战</small>
+                  </div>
+                  <div className="admin-action-row">
+                    <button className="danger-button" onClick={() => action("closeRoom", { roomId: room.id })}>关闭房间</button>
+                    <button onClick={() => action("clearRoomChat", { roomId: room.id })}>清空房间聊天</button>
+                    <button onClick={() => action("forceNext", { roomId: room.id })}>强制下一局</button>
+                  </div>
+                  {room.gameId === "othello" && (
+                    <div className="admin-action-row othello-admin-actions">
+                      <button onClick={() => action("forceOthelloRestart", { roomId: room.id })}>黑白棋重开</button>
+                      <button onClick={() => action("forceOthelloEnd", { roomId: room.id, othelloResult: "A" })}>判黑方胜</button>
+                      <button onClick={() => action("forceOthelloEnd", { roomId: room.id, othelloResult: "B" })}>判白方胜</button>
+                      <button onClick={() => action("forceOthelloEnd", { roomId: room.id, othelloResult: "draw" })}>判平局</button>
+                    </div>
+                  )}
+                </div>
+              ))}
+              {lobby.rooms.length === 0 && <p className="empty">暂无房间</p>}
+            </div>
+          )}
         </div>
       );
     }
