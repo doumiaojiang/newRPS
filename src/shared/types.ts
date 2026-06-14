@@ -326,6 +326,13 @@ export type AppConfig = {
     description: string;
     adminPassword: string;
   };
+  dailyAnnouncement: {
+    enabled: boolean;
+    title: string;
+    content: string;
+    buttonText: string;
+    version: string;
+  };
   genders: GenderOption[];
   genderFactions: GenderFaction[];
   titles: Array<{

@@ -1615,7 +1615,7 @@ function finishOthelloGame(room: RoomState) {
   });
 }
 
-function forceEndOthelloGame(room: RoomState, result: RoundResult) {
+function forceEndOthelloGame(room: RoomState, result: RoundResult, options: { label?: string; historyNote?: string; notice?: string } = {}) {
   if (!room.othello) return { ok: false, error: "黑白棋还没有开始" };
   if (room.othello.ended || room.phase === "result") return { ok: false, error: "当前黑白棋对局已经结束" };
   const { blackCount, whiteCount } = othelloCounts(room.othello.board);
@@ -1632,7 +1632,7 @@ function forceEndOthelloGame(room: RoomState, result: RoundResult) {
   };
   room.phase = "result";
   room.status = "playing";
-  const label = result === "draw" ? "管理员判定平局" : `管理员判定${result === "A" ? "黑方" : "白方"}胜利`;
+  const label = options.label || (result === "draw" ? "管理员判定平局" : `管理员判定${result === "A" ? "黑方" : "白方"}胜利`);
   if (result === "draw") {
     if (playerA) playerA.stats.draws += 1;
     if (playerB) playerB.stats.draws += 1;
@@ -1664,7 +1664,7 @@ function forceEndOthelloGame(room: RoomState, result: RoundResult) {
     moveB: "noMove",
     result,
     resultLabel: label,
-    resultText: `${room.resultText}（管理员处理）`,
+    resultText: options.historyNote ? `${room.resultText}（${options.historyNote}）` : `${room.resultText}（管理员处理）`,
     gameId: "othello",
     othelloScore: { black: blackCount, white: whiteCount },
     othelloBlackSeat: room.othello.blackSeat,
@@ -1677,7 +1677,7 @@ function forceEndOthelloGame(room: RoomState, result: RoundResult) {
     punishedNames: [],
     proofs: []
   });
-  roomNotice(room, `${label}，本局已结束。`);
+  roomNotice(room, options.notice || `${label}，本局已结束。`);
   return { ok: true };
 }
 
@@ -2898,6 +2898,29 @@ io.on("connection", (socket) => {
     if (!result.ok) return reply?.({ error: result.error });
     broadcastRoom(room.id, true);
     reply?.({ ok: true });
+  });
+
+  guardedOn(socket, "othello:surrender", { limit: 5, windowMs: 60_000, cooldownMs: 20_000 }, (_payload, reply) => {
+    const player = getPlayer(socket.id);
+    const room = player?.roomId ? rooms.get(player.roomId) : undefined;
+    if (!player || !room) return reply?.({ error: "你不在房间中" });
+    if (room.settings.gameId !== "othello") return reply?.({ error: "当前房间不是黑白棋" });
+    const loserSeat = seatOf(room, player.id);
+    if (!loserSeat) return reply?.({ error: "只有战斗席玩家可以认输" });
+    if (!room.othello || room.phase !== "choosing" || room.othello.ended) return reply?.({ error: "当前不能认输" });
+    const winnerSeat = loserSeat === "A" ? "B" : "A";
+    if (!room.seats[winnerSeat]) return reply?.({ error: "对手不在战斗席，不能认输" });
+    const winnerName = occupantName(room.seats[winnerSeat]);
+    const loserName = playerShortName(player);
+    const result = forceEndOthelloGame(room, winnerSeat, {
+      label: `${loserName}认输，${winnerName}胜利`,
+      historyNote: "认输",
+      notice: `${loserName} 选择认输，${winnerName} 获胜。`
+    });
+    if (!result.ok) return reply?.({ error: result.error });
+    reply?.({ ok: true });
+    broadcastRoom(room.id, true);
+    broadcastLobby();
   });
 
   guardedOn(socket, "othello:restart", { limit: 8, windowMs: 60_000, cooldownMs: 30_000 }, (_payload, reply) => {

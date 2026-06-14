@@ -4,6 +4,13 @@
     "description": "粉蓝白风格的实时联机小游戏大厅，先从锤子剪刀布开始。",
     "adminPassword": ""
   },
+  "dailyAnnouncement": {
+    "enabled": true,
+    "title": "今日公告",
+    "content": "欢迎来到抖喵游戏屋。游玩时请尊重其他玩家，遇到卡房或异常可以联系管理员处理。",
+    "buttonText": "知道了",
+    "version": "default"
+  },
   "genders": [
     { "id": "boy", "label": "男生", "factionId": "male_faction" },
     { "id": "male", "label": "男性", "factionId": "male_faction" },

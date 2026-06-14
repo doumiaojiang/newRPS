@@ -95,6 +95,14 @@ const defaultExtremeMode: AppConfig["extremeMode"] = {
   winStreakCrashChance: 0.5,
   crashTargetPoints: 333
 };
+
+const defaultDailyAnnouncement: AppConfig["dailyAnnouncement"] = {
+  enabled: true,
+  title: "今日公告",
+  content: "欢迎来到抖喵游戏屋。游玩时请尊重其他玩家，遇到卡房或异常可以联系管理员处理。",
+  buttonText: "知道了",
+  version: "default"
+};
 const defaultAccessControl = { maxOnlinePerIp: 3, maxCreatesPer10Min: 5 };
 const defaultRoomInfoTags: Record<string, RoomInfoTagStyle> = {
   phaseReady: { label: "等待坐满", textColor: "#225c8d", backgroundColor: "#e5f5ff", borderColor: "#9ed7ff" },
@@ -159,6 +167,13 @@ function normalizeConfig(input: AppConfig): AppConfig {
       name: String(input.site?.name || "").trim(),
       description: String(input.site?.description || ""),
       adminPassword: String(process.env.ADMIN_PASSWORD || input.site?.adminPassword || "").trim()
+    },
+    dailyAnnouncement: {
+      enabled: input.dailyAnnouncement?.enabled !== false,
+      title: String(input.dailyAnnouncement?.title || defaultDailyAnnouncement.title).trim().slice(0, 32) || defaultDailyAnnouncement.title,
+      content: String(input.dailyAnnouncement?.content || defaultDailyAnnouncement.content).trim().slice(0, 800) || defaultDailyAnnouncement.content,
+      buttonText: String(input.dailyAnnouncement?.buttonText || defaultDailyAnnouncement.buttonText).trim().slice(0, 16) || defaultDailyAnnouncement.buttonText,
+      version: String(input.dailyAnnouncement?.version || defaultDailyAnnouncement.version).trim().slice(0, 32) || defaultDailyAnnouncement.version
     },
     genderFactions,
     genders,
@@ -339,6 +354,11 @@ function assertHexColor(value: string, label: string) {
 export function validateConfig(input: AppConfig) {
   input = normalizeConfig(input);
   if (!input.site?.name) throw new Error("网站名称不能为空");
+  if (input.dailyAnnouncement?.enabled) {
+    if (!input.dailyAnnouncement.title?.trim()) throw new Error("每日公告标题不能为空");
+    if (!input.dailyAnnouncement.content?.trim()) throw new Error("每日公告内容不能为空");
+    if (!input.dailyAnnouncement.buttonText?.trim()) throw new Error("每日公告按钮文字不能为空");
+  }
   if (!Array.isArray(input.genders) || input.genders.length === 0) throw new Error("至少需要一个性别选项");
   if (!Array.isArray(input.genderFactions) || input.genderFactions.length === 0) throw new Error("至少需要一个性别阵营");
   assertUnique(input.genderFactions.map((faction) => faction.id), "阵营 ID");

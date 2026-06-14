@@ -4,6 +4,7 @@ import { socket } from "./main";
 import type { AppConfig, BotDifficulty, ChatMessage, GenderFaction, LobbySnapshot, Move, PublicPlayer, PunishmentTaskConfig, RoomInfoTagStyle, RoomNamePool, RoomSettings, RoomSnapshot, RoundResult, SeatKey, SeatOccupant } from "../shared/types";
 
 const tokenKey = "rps-online-token";
+const dailyAnnouncementKey = "rps-online-daily-announcement";
 const defaultRoomName = "新的锤子剪刀布房间";
 const defaultOthelloRoomName = "新的黑白棋房间";
 const maxImageUploadBytes = 8 * 1024 * 1024;
@@ -28,6 +29,16 @@ async function connectSocketWithSession() {
 
 type MeState = { player: PublicPlayer; token: string; roomId?: string; room?: RoomSnapshot };
 type AnnouncementPayload = { id: string; message: string; durationMs: number; createdAt: number };
+
+function todayKey() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
+function dailyAnnouncementSeenKey(config: AppConfig) {
+  const daily = config.dailyAnnouncement;
+  return `${todayKey()}|${daily.version}|${daily.title}|${daily.content}`;
+}
 
 function isAdminRoute() {
   return window.location.hash === "#admin" || window.location.pathname.replace(/\/$/, "").endsWith("/admin");
@@ -154,6 +165,7 @@ export function App() {
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [announcement, setAnnouncement] = useState<AnnouncementPayload | null>(null);
+  const [dailyAnnouncementOpen, setDailyAnnouncementOpen] = useState(false);
   const [connectionState, setConnectionState] = useState<"connected" | "connecting" | "disconnected">(() => socket.connected ? "connected" : "connecting");
   const [theme, setTheme] = useState<"light" | "dark">(() => (localStorage.getItem("rps-online-theme") === "dark" ? "dark" : "light"));
   const restoreInFlightRef = useRef(false);
@@ -273,10 +285,26 @@ export function App() {
   }, [notice]);
 
   useEffect(() => {
+    if (!config) return;
+    if (!config.dailyAnnouncement.enabled) {
+      setDailyAnnouncementOpen(false);
+      return;
+    }
+    const seenKey = dailyAnnouncementSeenKey(config);
+    setDailyAnnouncementOpen(localStorage.getItem(dailyAnnouncementKey) !== seenKey);
+  }, [config]);
+
+  useEffect(() => {
     if (!announcement) return;
     const timer = window.setTimeout(() => setAnnouncement(null), announcement.durationMs);
     return () => window.clearTimeout(timer);
   }, [announcement]);
+
+  function closeDailyAnnouncement() {
+    if (!config) return;
+    localStorage.setItem(dailyAnnouncementKey, dailyAnnouncementSeenKey(config));
+    setDailyAnnouncementOpen(false);
+  }
 
   useEffect(() => {
     // 管理入口故意不放在普通页面按钮里：地址加 #admin，或按 Ctrl/Command + Shift + A。
@@ -345,6 +373,18 @@ export function App() {
             <p>{announcement.message}</p>
           </div>
           <button className="icon-button" type="button" aria-label="关闭公告" onClick={() => setAnnouncement(null)}>×</button>
+        </div>
+      )}
+      {dailyAnnouncementOpen && (
+        <div className="daily-announcement-backdrop" role="dialog" aria-modal="true" aria-labelledby="daily-announcement-title">
+          <section className="daily-announcement-card">
+            <div>
+              <span className="daily-announcement-kicker">📢 每日公告</span>
+              <h2 id="daily-announcement-title">{config.dailyAnnouncement.title}</h2>
+              <p>{config.dailyAnnouncement.content}</p>
+            </div>
+            <button className="primary" type="button" onClick={closeDailyAnnouncement}>{config.dailyAnnouncement.buttonText}</button>
+          </section>
         </div>
       )}
       {view === "login" && <Login config={config} onDone={(next) => {
@@ -1187,6 +1227,15 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
     }
   }
 
+  async function surrenderOthello() {
+    if (!window.confirm("确定要认输吗？本局会立即判对方胜利。")) return;
+    try {
+      await ask("othello:surrender", {});
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "认输失败");
+    }
+  }
+
   async function submitProof() {
     try {
       await ask("punishment:submit", { text: proofText, imageUrl: proofImage });
@@ -1278,7 +1327,7 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
       <div className="room-content-grid">
         <div className="actions-panel panel">
           {room.settings.gameId === "othello" ? (
-            <OthelloPanel room={room} me={me} onMove={playOthello} onRestart={restartOthello} onReady={readyOthello} />
+            <OthelloPanel room={room} me={me} onMove={playOthello} onRestart={restartOthello} onReady={readyOthello} onSurrender={surrenderOthello} />
           ) : mySeat && (
             <div className="move-panel">
               <div>
@@ -1455,7 +1504,7 @@ function OthelloScore({ room }: { room: RoomSnapshot }) {
   );
 }
 
-function OthelloPanel({ room, me, onMove, onRestart, onReady }: { room: RoomSnapshot; me: PublicPlayer; onMove: (row: number, col: number) => void; onRestart: () => void; onReady: () => void }) {
+function OthelloPanel({ room, me, onMove, onRestart, onReady, onSurrender }: { room: RoomSnapshot; me: PublicPlayer; onMove: (row: number, col: number) => void; onRestart: () => void; onReady: () => void; onSurrender: () => void }) {
   const state = room.othello;
   const mySeat = room.seats.A?.id === me.id ? "A" : room.seats.B?.id === me.id ? "B" : null;
   const isMyTurn = Boolean(state && mySeat && state.turn === mySeat && room.phase === "choosing" && !state.ended);
@@ -1464,6 +1513,7 @@ function OthelloPanel({ room, me, onMove, onRestart, onReady }: { room: RoomSnap
   const waitingForReady = room.phase === "ready" && Boolean(room.seats.A && room.seats.B);
   const drawingFirst = waitingForReady && room.ready.A && room.ready.B;
   const myReady = mySeat ? room.ready[mySeat] : false;
+  const canSurrender = Boolean(mySeat && state && room.phase === "choosing" && !state.ended);
   const blackSeat = state?.blackSeat;
   const whiteSeat = blackSeat ? (blackSeat === "A" ? "B" : "A") : null;
   return (
@@ -1507,6 +1557,11 @@ function OthelloPanel({ room, me, onMove, onRestart, onReady }: { room: RoomSnap
         </div>
       )}
       {state?.ended && mySeat && <button className="primary othello-restart-button" onClick={onRestart}>再来一局</button>}
+      {canSurrender && (
+        <button className="soft-button danger-soft othello-surrender-button" onClick={onSurrender}>
+          投降 / 认输
+        </button>
+      )}
       <div className="othello-board" role="grid" aria-label="黑白棋棋盘">
         {(state?.board || Array.from({ length: 8 }, () => Array.from({ length: 8 }, () => null))).map((row, rowIndex) => row.map((cell, colIndex) => {
           const legal = legalKeys.has(`${rowIndex}-${colIndex}`);
@@ -3177,7 +3232,37 @@ function AdminPanel({ config, lobby, onBack, onError }: { config: AppConfig; lob
     if (activeSection === "messages") {
       return (
         <div className="config-section admin-section-card">
-          <AdminSectionHeader title="系统提示" subtitle="修改密码错误、名字校验、保存提示等系统文案。" />
+          <AdminSectionHeader title="系统提示" subtitle="修改每日公告、密码错误、名字校验、保存提示等系统文案。" />
+          <div className="admin-announcement-card">
+            <div className="admin-card-title">
+              <strong>每日公告弹窗</strong>
+              <small>每天每个浏览器显示一次，建角色前也会显示</small>
+            </div>
+            <Toggle
+              label="开启每日公告"
+              value={draft.dailyAnnouncement.enabled}
+              onChange={(enabled) => patch({ dailyAnnouncement: { ...draft.dailyAnnouncement, enabled } })}
+            />
+            <div className="config-row">
+              <label className="field-label">
+                <span>公告标题</span>
+                <input value={draft.dailyAnnouncement.title} maxLength={32} onChange={(event) => patch({ dailyAnnouncement: { ...draft.dailyAnnouncement, title: event.target.value } })} placeholder="今日公告" />
+              </label>
+              <label className="field-label">
+                <span>按钮文字</span>
+                <input value={draft.dailyAnnouncement.buttonText} maxLength={16} onChange={(event) => patch({ dailyAnnouncement: { ...draft.dailyAnnouncement, buttonText: event.target.value } })} placeholder="知道了" />
+              </label>
+              <label className="field-label">
+                <span>版本标识</span>
+                <input value={draft.dailyAnnouncement.version} maxLength={32} onChange={(event) => patch({ dailyAnnouncement: { ...draft.dailyAnnouncement, version: event.target.value } })} placeholder="default" />
+              </label>
+            </div>
+            <label className="field-label">
+              <span>公告内容</span>
+              <textarea value={draft.dailyAnnouncement.content} maxLength={800} onChange={(event) => patch({ dailyAnnouncement: { ...draft.dailyAnnouncement, content: event.target.value } })} placeholder="写下今天想提醒玩家的内容" />
+            </label>
+            <p className="hint">如果希望玩家今天再次看到公告，可以修改“版本标识”，例如改成 2026-06-14-a。</p>
+          </div>
           <div className="config-row">
             {Object.entries(draft.messages).map(([key, value]) => (
               <label className="field-label" key={key}>
