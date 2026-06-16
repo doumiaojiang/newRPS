@@ -4,9 +4,36 @@ import { socket } from "./main";
 import type { AppConfig, BotDifficulty, ChatMessage, GenderFaction, LobbySnapshot, Move, PublicPlayer, PunishmentTaskConfig, RoomInfoTagStyle, RoomNamePool, RoomSettings, RoomSnapshot, RoundResult, SeatKey, SeatOccupant } from "../shared/types";
 
 const tokenKey = "rps-online-token";
+const playerIdKey = "rps-player-id";
+const playerSecretKey = "rps-player-secret";
 const defaultRoomName = "新的锤子剪刀布房间";
 const defaultOthelloRoomName = "新的黑白棋房间";
 const maxImageUploadBytes = 8 * 1024 * 1024;
+
+function randomUuid() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  // 兜底：旧浏览器没有 crypto.randomUUID 时，用 getRandomValues 拼一个 v4 UUID。
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((b) => b.toString(16).padStart(2, "0"));
+  return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
+}
+
+// 长期身份：playerId + playerSecret 一旦生成就长期保存在本地，和短期的 session token 解耦。
+// 积分、战绩、称号只跟 playerId 走，token 过期/重发都不会清空玩家档案。
+function ensurePlayerIdentity() {
+  let playerId = localStorage.getItem(playerIdKey);
+  let playerSecret = localStorage.getItem(playerSecretKey);
+  if (!playerId || !playerSecret) {
+    playerId = randomUuid();
+    playerSecret = `${randomUuid()}-${randomUuid()}`;
+    localStorage.setItem(playerIdKey, playerId);
+    localStorage.setItem(playerSecretKey, playerSecret);
+  }
+  return { playerId, playerSecret };
+}
 
 async function ensureSessionToken() {
   const existing = localStorage.getItem(tokenKey);
@@ -174,7 +201,7 @@ export function App() {
     if (!token || !cachedName) return;
     restoreInFlightRef.current = true;
     try {
-      const next = await ask<MeState>("player:join", { name: cachedName, genderId: cachedGender, token });
+      const next = await ask<MeState>("player:join", { name: cachedName, genderId: cachedGender, token, ...ensurePlayerIdentity() });
       setMe(next);
       if (next.room) setRoom(next.room);
       else setRoom(null);
@@ -240,9 +267,14 @@ export function App() {
       setConnectionState("disconnected");
       setNotice("连接已断开，正在重连。");
     });
-    socket.on("connect_error", () => {
-      localStorage.removeItem(tokenKey);
-      connectSocketWithSession().catch(() => setConnectionState("disconnected"));
+    socket.on("connect_error", (error: Error & { data?: { code?: string } }) => {
+      setConnectionState("disconnected");
+      const code = error?.data?.code;
+      // 只有会话相关错误才清掉 token 重新换发；身份相关（playerId/secret）不清 token。
+      if (code === "SESSION_INVALID" || code === "SESSION_EXPIRED" || code === "SESSION_MISSING" || !code) {
+        localStorage.removeItem(tokenKey);
+        connectSocketWithSession().catch(() => setConnectionState("disconnected"));
+      }
     });
     socket.io.on("reconnect_attempt", () => setConnectionState("connecting"));
     return () => {
@@ -369,7 +401,7 @@ function Login({ config, onDone, onError }: { config: AppConfig; onDone: (me: Me
 
   async function submit() {
     try {
-      const result = await ask<MeState>("player:join", { name, genderId, token: localStorage.getItem(tokenKey) });
+      const result = await ask<MeState>("player:join", { name, genderId, token: localStorage.getItem(tokenKey), ...ensurePlayerIdentity() });
       localStorage.setItem(tokenKey, result.token);
       localStorage.setItem("rps-online-name", name);
       localStorage.setItem("rps-online-gender", genderId);
