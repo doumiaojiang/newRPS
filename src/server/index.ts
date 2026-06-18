@@ -2,6 +2,7 @@ import express from "express";
 import http from "node:http";
 import path from "node:path";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import crypto from "node:crypto";
 import helmet from "helmet";
 import multer from "multer";
@@ -39,6 +40,14 @@ type PlayerState = PublicPlayer & {
   disconnectGraceTimer?: NodeJS.Timeout;
   disconnectTimer?: NodeJS.Timeout;
   recentMoves: RpsMove[];
+  // 长期身份：playerId + playerSecret 由前端持久化，和 session(sid/token) 解耦。
+  // 这些字段绝不进入公开快照（publicPlayer 会剥离），也绝不写入日志。
+  playerId?: string;
+  playerSecretHash?: string;
+  persistent?: boolean;
+  currentSid?: string;
+  createdAt?: number;
+  lastSeenAt?: number;
 };
 
 function freshOthelloStats() {
@@ -89,6 +98,12 @@ fs.mkdirSync(adminUploadsDir, { recursive: true });
 let config: AppConfig = loadConfig();
 const players = new Map<string, PlayerState>();
 const tokenToPlayerId = new Map<string, string>();
+// 长期身份索引：客户端 playerId -> 运行时 player.id（publicId）。
+const playerIdToId = new Map<string, string>();
+// 会话索引：sid -> player.id。sid/token 可重发、过期、销毁，不影响 player.id。
+const sidToPlayerId = new Map<string, string>();
+const dataDir = path.join(rootDir, "data");
+const playersFile = path.join(dataDir, "players.json");
 const rooms = new Map<string, RoomState>();
 const botTimers = new Map<string, NodeJS.Timeout>();
 const othelloSettlementTimers = new Map<string, NodeJS.Timeout>();
@@ -383,7 +398,7 @@ app.post("/api/proof-image", createRateLimit("proof-image", 60_000, 20), (req, r
     const session = verifySessionToken(token);
     const playerId = session ? tokenToPlayerId.get(token) : undefined;
     const player = playerId ? players.get(playerId) : undefined;
-    if (!session || player?.id !== session.sid) {
+    if (!session || !player || sidToPlayerId.get(session.sid) !== player.id) {
       securityLog("upload_denied", { sid: session?.sid, ip: clientIpFromRequest(req), event: "proof-image", userAgent: req.headers["user-agent"] });
       return res.status(403).json({ message: "Invalid session" });
     }
@@ -443,6 +458,17 @@ function socketIp(socket: { handshake: { headers: Record<string, string | string
   return String(raw?.split(",")[0] || socket.handshake.address || "unknown").trim();
 }
 
+function socketAuthError(code: string, message: string) {
+  const err = new Error(message) as Error & { data?: { code: string } };
+  err.data = { code };
+  return err;
+}
+
+function tokenLooksExpired(token: string) {
+  const exp = Number(token.split(".")[1]);
+  return Number.isFinite(exp) && exp <= Date.now();
+}
+
 io.use((socket, next) => {
   const token = String(socket.handshake.auth?.token || socket.handshake.query?.token || "");
   const session = verifySessionToken(token);
@@ -454,9 +480,15 @@ io.use((socket, next) => {
     return next(new Error("origin not allowed"));
   }
 
+  if (!token) {
+    securityLog("socket_auth_failed", { ip: ipAddress, userAgent, reason: "missing" });
+    return next(socketAuthError("SESSION_MISSING", "Session token missing"));
+  }
+
   if (!session) {
-    securityLog("socket_auth_failed", { ip: ipAddress, userAgent });
-    return next(new Error("Invalid session"));
+    const expired = tokenLooksExpired(token);
+    securityLog("socket_auth_failed", { ip: ipAddress, userAgent, reason: expired ? "expired" : "invalid" });
+    return next(socketAuthError(expired ? "SESSION_EXPIRED" : "SESSION_INVALID", expired ? "Session expired" : "Session invalid"));
   }
 
   const socketsForIp = socketIdsByIp.get(ipAddress) || new Set<string>();
@@ -676,7 +708,21 @@ function applyGender(player: PlayerState, genderId: string) {
 
 function publicPlayer(player: PlayerState): PublicPlayer {
   if (!player.othelloStats) player.othelloStats = freshOthelloStats();
-  const { socketId: _socketId, token: _token, ipAddress: _ipAddress, disconnectGraceTimer: _graceTimer, disconnectTimer: _timer, recentMoves: _moves, ...rest } = player;
+  const {
+    socketId: _socketId,
+    token: _token,
+    ipAddress: _ipAddress,
+    disconnectGraceTimer: _graceTimer,
+    disconnectTimer: _timer,
+    recentMoves: _moves,
+    playerId: _playerId,
+    playerSecretHash: _secretHash,
+    persistent: _persistent,
+    currentSid: _currentSid,
+    createdAt: _createdAt,
+    lastSeenAt: _lastSeenAt,
+    ...rest
+  } = player;
   return rest;
 }
 
@@ -975,15 +1021,18 @@ function makeBot(difficulty: BotDifficulty): BotPlayer {
   };
 }
 
-function createPlayer(name: string, genderId: string, token: string): PlayerState {
+function createPlayer(name: string, genderId: string, token: string, identity?: { playerId?: string; playerSecret?: string }): PlayerState {
   const session = verifySessionToken(token);
-  const playerId = session?.sid || randomId();
+  const persistent = Boolean(identity?.playerId && identity?.playerSecret);
+  // 持久玩家用独立的 publicId 作为 player.id（对外展示/座位/索引），
+  // 不直接复用 sid，也不复用客户端的 playerId（playerId 不广播）。
+  const id = persistent ? generatePublicId() : (session?.sid || randomId());
   const gender = genderInfo(genderId);
   const titleSegment = titleSegmentFor(0);
   const title = randomTitleFromSegment(titleSegment, gender.factionId);
   const now = Date.now();
   const player: PlayerState = {
-    id: playerId,
+    id,
     name,
     genderId: gender.genderId,
     genderLabel: gender.genderLabel,
@@ -1008,11 +1057,195 @@ function createPlayer(name: string, genderId: string, token: string): PlayerStat
     token: token || randomId(),
     stats: { wins: 0, losses: 0, draws: 0, punishments: 0, rankedPoints: 0, title, titleSegmentId: titleSegment?.id },
     othelloStats: freshOthelloStats(),
-    recentMoves: []
+    recentMoves: [],
+    persistent,
+    playerId: identity?.playerId,
+    playerSecretHash: persistent ? hashSecret(String(identity?.playerSecret)) : undefined,
+    currentSid: session?.sid,
+    createdAt: now,
+    lastSeenAt: now
   };
   players.set(player.id, player);
   tokenToPlayerId.set(player.token, player.id);
+  if (player.playerId) playerIdToId.set(player.playerId, player.id);
+  if (session?.sid) sidToPlayerId.set(session.sid, player.id);
+  if (persistent) requestPersist("lazy");
   return player;
+}
+
+function hashSecret(secret: string) {
+  return crypto.createHash("sha256").update(secret).digest("hex");
+}
+
+function generatePublicId() {
+  return crypto.randomBytes(9).toString("base64url");
+}
+
+// ------- players.json 轻量持久化（不等同数据库事务）-------
+function serializePlayers() {
+  return [...players.values()]
+    .filter((p) => p.persistent && p.playerId && p.playerSecretHash)
+    .map((p) => ({
+      id: p.id,
+      playerId: p.playerId,
+      playerSecretHash: p.playerSecretHash,
+      name: p.name,
+      genderId: p.genderId,
+      nameWarEnabled: p.nameWarEnabled,
+      nameWarAllowRename: p.nameWarAllowRename,
+      nameWarToggledAt: p.nameWarToggledAt,
+      nameWarOriginalName: p.nameWarOriginalName,
+      nameWarPenaltyName: p.nameWarPenaltyName,
+      nameWarPunished: p.nameWarPunished,
+      nameWarRenameProtectedUntil: p.nameWarRenameProtectedUntil,
+      nameWarRenamedBy: p.nameWarRenamedBy,
+      nameWarRenamedByName: p.nameWarRenamedByName,
+      nameWarRenameWindowStartedAt: p.nameWarRenameWindowStartedAt,
+      nameWarRenameCount: p.nameWarRenameCount,
+      giveawayEnabled: p.giveawayEnabled,
+      giveawayValue: p.giveawayValue,
+      giveawayClicks: p.giveawayClicks,
+      rankMultiplierUnlocked: p.rankMultiplierUnlocked,
+      extremeModeEnabled: p.extremeModeEnabled,
+      extremeModeToggledAt: p.extremeModeToggledAt,
+      extremeModeCooldownUntil: p.extremeModeCooldownUntil,
+      extremeWinStreak: p.extremeWinStreak,
+      extremeLastDecayHour: p.extremeLastDecayHour,
+      stats: p.stats,
+      othelloStats: p.othelloStats,
+      createdAt: p.createdAt,
+      lastSeenAt: p.lastSeenAt
+    }));
+}
+
+async function loadPlayersFromDisk() {
+  try {
+    if (!fs.existsSync(playersFile)) return;
+    const raw = await fsp.readFile(playersFile, "utf-8");
+    const list = JSON.parse(raw);
+    if (!Array.isArray(list)) throw new Error("players.json is not an array");
+    for (const item of list) {
+      if (!item || typeof item !== "object") continue;
+      if (!item.id || !item.playerId || !item.playerSecretHash) continue;
+      if (players.has(String(item.id)) || playerIdToId.has(String(item.playerId))) continue;
+      const gender = genderInfo(String(item.genderId || "male"));
+      const stats = item.stats && typeof item.stats === "object" ? item.stats : undefined;
+      const player: PlayerState = {
+        id: String(item.id),
+        name: String(item.name || "玩家"),
+        genderId: gender.genderId,
+        genderLabel: gender.genderLabel,
+        factionId: gender.factionId,
+        factionLabel: gender.factionLabel,
+        factionColors: gender.factionColors,
+        displayName: "",
+        connected: false,
+        nameWarOriginalName: item.nameWarOriginalName || item.name,
+        nameWarEnabled: item.nameWarEnabled,
+        nameWarAllowRename: item.nameWarAllowRename,
+        nameWarToggledAt: item.nameWarToggledAt,
+        nameWarPenaltyName: item.nameWarPenaltyName,
+        nameWarPunished: item.nameWarPunished,
+        nameWarRenameProtectedUntil: item.nameWarRenameProtectedUntil,
+        nameWarRenamedBy: item.nameWarRenamedBy,
+        nameWarRenamedByName: item.nameWarRenamedByName,
+        nameWarRenameWindowStartedAt: item.nameWarRenameWindowStartedAt,
+        nameWarRenameCount: item.nameWarRenameCount,
+        giveawayEnabled: item.giveawayEnabled,
+        giveawayValue: item.giveawayValue || 0,
+        giveawayClicks: item.giveawayClicks || 0,
+        giveawayBoardLikes: 0,
+        giveawayBoardDislikes: 0,
+        giveawayVoteLikesThisHour: 0,
+        giveawayVoteDislikesThisHour: 0,
+        rankMultiplierUnlocked: item.rankMultiplierUnlocked,
+        extremeModeEnabled: item.extremeModeEnabled,
+        extremeModeToggledAt: item.extremeModeToggledAt,
+        extremeModeCooldownUntil: item.extremeModeCooldownUntil,
+        extremeWinStreak: item.extremeWinStreak || 0,
+        extremeLastDecayHour: typeof item.extremeLastDecayHour === "number" ? item.extremeLastDecayHour : currentExtremeDecayHour(),
+        token: randomId(),
+        stats: {
+          wins: stats?.wins || 0,
+          losses: stats?.losses || 0,
+          draws: stats?.draws || 0,
+          punishments: stats?.punishments || 0,
+          rankedPoints: typeof stats?.rankedPoints === "number" ? stats.rankedPoints : 0,
+          title: stats?.title || randomTitleFromSegment(titleSegmentFor(0), gender.factionId),
+          titleSegmentId: stats?.titleSegmentId
+        },
+        othelloStats: item.othelloStats && typeof item.othelloStats === "object" ? { ...freshOthelloStats(), ...item.othelloStats } : freshOthelloStats(),
+        recentMoves: [],
+        persistent: true,
+        playerId: String(item.playerId),
+        playerSecretHash: String(item.playerSecretHash),
+        createdAt: item.createdAt || Date.now(),
+        lastSeenAt: item.lastSeenAt || Date.now()
+      };
+      player.displayName = formatDisplayName(player);
+      players.set(player.id, player);
+      playerIdToId.set(player.playerId!, player.id);
+      tokenToPlayerId.set(player.token, player.id);
+    }
+    console.log(`[players] loaded ${players.size} players`);
+  } catch (err) {
+    console.error("[players] load failed:", err);
+  }
+}
+
+let persistQueue: Promise<void> = Promise.resolve();
+let persistScheduled = false;
+let immediateScheduled = false;
+let persistDirty = false;
+
+function writeSnapshot() {
+  const snapshot = serializePlayers();
+  persistQueue = persistQueue
+    .then(async () => {
+      const tmp = `${playersFile}.tmp`;
+      const data = JSON.stringify(snapshot, null, 2);
+      await fsp.mkdir(dataDir, { recursive: true });
+      await fsp.writeFile(tmp, data, "utf-8");
+      await fsp.rename(tmp, playersFile);
+    })
+    .catch((err) => {
+      persistDirty = true;
+      console.error("[players] persist failed:", err);
+    });
+  return persistQueue;
+}
+
+function requestPersist(mode: "lazy" | "important" = "lazy") {
+  persistDirty = true;
+  if (mode === "important") {
+    if (immediateScheduled) return;
+    immediateScheduled = true;
+    setImmediate(() => {
+      immediateScheduled = false;
+      if (persistDirty) {
+        persistDirty = false;
+        void writeSnapshot();
+      }
+    });
+    return;
+  }
+  if (persistScheduled) return;
+  persistScheduled = true;
+  setTimeout(() => {
+    persistScheduled = false;
+    if (persistDirty) {
+      persistDirty = false;
+      void writeSnapshot();
+    }
+  }, 3000);
+}
+
+async function flushPersist() {
+  if (persistDirty) {
+    persistDirty = false;
+    await writeSnapshot();
+  }
+  await persistQueue;
 }
 
 function applyRanked(winner: PlayerState | undefined, loser: PlayerState | undefined, stake: RankStake) {
@@ -1230,12 +1463,14 @@ function updateRankedPoints(player: PlayerState, delta: number) {
   player.stats.rankedPoints = clamp(player.stats.rankedPoints + delta, minPoints, 999);
   refreshNameWarState(player);
   refreshPlayerSnapshots(player);
+  if (player.persistent) requestPersist("important");
 }
 
 function setRankedPointsByAdmin(player: PlayerState, points: number) {
   const minPoints = player.nameWarEnabled ? -1999 : -999;
   player.stats.rankedPoints = clamp(Math.round(points), minPoints, 999);
   refreshNameWarState(player);
+  if (player.persistent) requestPersist("important");
 }
 
 function extremeHourlyDecayAmount(player: PlayerState) {
@@ -2129,6 +2364,8 @@ function punishmentPlayersForResult(room: RoomState, result: RoundResult) {
 
 function addRoundHistory(room: RoomState, item: RoundHistoryItem) {
   room.roundHistory.unshift(item);
+  // 任意对局结算都会写一条战绩，这里统一触发一次惰性持久化，覆盖排位/非排位/断线判负。
+  requestPersist("lazy");
 }
 
 function currentPunishment(room: RoomState) {
@@ -2556,13 +2793,22 @@ io.on("connection", (socket) => {
   socket.emit("config:update", publicConfig());
   socket.emit("lobby:update", lobbySnapshot({ includeConfig: true }));
 
-  guardedOn(socket, "player:join", { limit: 8, windowMs: 60_000, cooldownMs: 60_000 }, ({ name, genderId, token }: { name: string; genderId: string; token?: string }, reply) => {
+  guardedOn(socket, "player:join", { limit: 8, windowMs: 60_000, cooldownMs: 60_000 }, ({ name, genderId, playerId, playerSecret }: { name: string; genderId: string; token?: string; playerId?: string; playerSecret?: string }, reply) => {
     const cleanName = cleanText(name, 12);
     if (cleanName.length < 2) return reply?.({ error: config.messages.nameRequired });
 
     const sid = String(socket.data.sid || "");
     const ipAddress = String(socket.data.ipAddress || socketIp(socket));
-    let player = players.get(sid);
+    const identityPlayerId = typeof playerId === "string" && playerId ? playerId : undefined;
+    const identityPlayerSecret = typeof playerSecret === "string" && playerSecret ? playerSecret : undefined;
+    // 身份解析：优先用长期 playerId 定位玩家，回退到 sid（无身份的临时玩家）。
+    let player = identityPlayerId ? players.get(playerIdToId.get(identityPlayerId) || "") : players.get(sid);
+    if (player?.persistent) {
+      if (!identityPlayerSecret || player.playerSecretHash !== hashSecret(identityPlayerSecret)) {
+        securityLog("player_identity_invalid", { sid, ip: ipAddress, userAgent: socket.handshake.headers["user-agent"] });
+        return reply?.({ error: "玩家身份校验失败", code: "PLAYER_IDENTITY_INVALID" });
+      }
+    }
     if (!player) {
       if (onlinePlayersFromIp(ipAddress) >= config.accessControl.maxOnlinePerIp) {
         return reply?.({ error: `当前网络下在线人数过多，最多允许 ${config.accessControl.maxOnlinePerIp} 人同时在线` });
@@ -2570,7 +2816,7 @@ io.on("connection", (socket) => {
       if (!canCreateFromIp(ipAddress)) {
         return reply?.({ error: `当前网络 10 分钟内新建玩家过多，最多允许 ${config.accessControl.maxCreatesPer10Min} 次` });
       }
-      player = createPlayer(cleanName, genderId, String(socket.data.token || ""));
+      player = createPlayer(cleanName, genderId, String(socket.data.token || ""), { playerId: identityPlayerId, playerSecret: identityPlayerSecret });
       securityLog("player_created", { sid, ip: ipAddress, userAgent: socket.handshake.headers["user-agent"] });
     }
     const wasDisconnected = !player.connected;
@@ -2585,8 +2831,15 @@ io.on("connection", (socket) => {
     player.socketId = socket.id;
     player.ipAddress = ipAddress;
     player.connected = true;
+    player.currentSid = sid;
+    player.lastSeenAt = Date.now();
     player.disconnectedAt = undefined;
     player.disconnectExpiresAt = undefined;
+    // sid/token 与 player.id 重新建立映射，供断线重连、上传鉴权使用。
+    socket.data.playerId = player.id;
+    if (sid) sidToPlayerId.set(sid, player.id);
+    const sessionToken = String(socket.data.token || player.token);
+    tokenToPlayerId.set(sessionToken, player.id);
     if (!player.nameWarEnabled) {
       player.name = cleanName;
       player.nameWarOriginalName = cleanName;
@@ -2605,6 +2858,7 @@ io.on("connection", (socket) => {
     if (player.roomId) socket.join(player.roomId);
     const currentRoom = player.roomId ? rooms.get(player.roomId) : undefined;
     reply?.({ player: publicPlayer(player), token: player.token, roomId: player.roomId, room: currentRoom ? roomSnapshot(currentRoom, { includeChat: true }) : undefined });
+    if (player.persistent) requestPersist("lazy");
     broadcastLobby();
     if (player.roomId) {
       if (currentRoom?.phase === "punishment" && hadDisconnectHold) {
@@ -2704,6 +2958,7 @@ io.on("connection", (socket) => {
     if (nameChanged) player.profileUpdatedAt = now;
     player.displayName = formatDisplayName(player);
     refreshPlayerSnapshots(player);
+    if (player.persistent) requestPersist("lazy");
     reply?.({ player: publicPlayer(player) });
     broadcastLobby();
     if (player.roomId) broadcastRoom(player.roomId);
@@ -3519,6 +3774,9 @@ io.on("connection", (socket) => {
         clearDisconnectHold(player);
         players.delete(player.id);
         tokenToPlayerId.delete(player.token);
+        if (player.playerId) playerIdToId.delete(player.playerId);
+        if (player.currentSid && sidToPlayerId.get(player.currentSid) === player.id) sidToPlayerId.delete(player.currentSid);
+        if (player.persistent) requestPersist("important");
         if (player.socketId) io.to(player.socketId).emit("player:kicked");
       }
     }
@@ -3590,8 +3848,20 @@ io.on("connection", (socket) => {
           if (room) applyDisconnectForfeit(room, expired);
           leaveRoom(expired, "disconnectTimeout");
         }
-        // 超过可见倒计时后只清掉房间/座位保护，不删除玩家档案。
-        // 否则玩家稍后用同一个浏览器回来时会被当成新玩家，积分和战绩看起来像“莫名清零”。
+        // 释放过期的 sid 映射；sid/token 可以销毁，但持久玩家档案保留。
+        if (expired.currentSid && sidToPlayerId.get(expired.currentSid) === expired.id) {
+          sidToPlayerId.delete(expired.currentSid);
+        }
+        if (expired.persistent) {
+          // 持久玩家：超过可见倒计时后只清掉房间/座位保护，不删除档案。
+          // 否则玩家稍后回来时会被当成新玩家，积分和战绩看起来像“莫名清零”。
+          expired.lastSeenAt = Date.now();
+          requestPersist("lazy");
+        } else {
+          // 临时游客：没有长期身份，超时后回收，避免内存泄漏。
+          players.delete(expired.id);
+          tokenToPlayerId.delete(expired.token);
+        }
         expired.disconnectExpiresAt = undefined;
         expired.disconnectTimer = undefined;
         broadcastLobby();
@@ -3602,7 +3872,28 @@ io.on("connection", (socket) => {
 
 const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || "127.0.0.1";
-server.listen(port, host, () => {
-  scheduleExtremeHourlyDecay();
-  console.log(`RPS Online server listening on http://${host}:${port}`);
+
+let shuttingDown = false;
+async function gracefulShutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[server] ${signal} received, flushing players...`);
+  try {
+    await flushPersist();
+  } catch (err) {
+    console.error("[players] flush on shutdown failed:", err);
+  }
+  process.exit(0);
+}
+
+process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
+// 兜底：周期性地把待写入的快照落盘，避免依赖单一触发点。
+setInterval(() => void flushPersist(), 60_000).unref?.();
+
+loadPlayersFromDisk().finally(() => {
+  server.listen(port, host, () => {
+    scheduleExtremeHourlyDecay();
+    console.log(`RPS Online server listening on http://${host}:${port}`);
+  });
 });

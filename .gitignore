@@ -3,6 +3,7 @@ dist/
 dist-server/
 work/
 outputs/
+data/
 
 .DS_Store
 *.log
