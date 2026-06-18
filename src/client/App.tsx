@@ -1,4 +1,4 @@
-import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MutableRefObject, useEffect, useRef, useState } from "react";
 import { Crown, DoorOpen, Download, Eye, MessageCircle, Moon, Pencil, RefreshCcw, Save, Settings, Shield, Sun, Swords, Upload, UserRound, Users } from "lucide-react";
 import { socket } from "./main";
 import type { AppConfig, BotDifficulty, ChatMessage, GenderFaction, LobbySnapshot, Move, PublicPlayer, PunishmentTaskConfig, RoomInfoTagStyle, RoomNamePool, RoomSettings, RoomSnapshot, RoundResult, SeatKey, SeatOccupant } from "../shared/types";
@@ -6,9 +6,18 @@ import type { AppConfig, BotDifficulty, ChatMessage, GenderFaction, LobbySnapsho
 const tokenKey = "rps-online-token";
 const playerIdKey = "rps-player-id";
 const playerSecretKey = "rps-player-secret";
+const dailyAnnouncementKey = "rps-online-daily-announcement";
 const defaultRoomName = "新的锤子剪刀布房间";
 const defaultOthelloRoomName = "新的黑白棋房间";
 const maxImageUploadBytes = 8 * 1024 * 1024;
+const othelloBoardThemes = [
+  { id: "classic", name: "经典绿", description: "传统棋盘，最清楚耐看。", board: "#2f8a64", cell: "#38a474", line: "rgba(18, 72, 52, 0.55)", hover: "#45b883", border: "#2f7a5c" },
+  { id: "pastel", name: "粉蓝白", description: "柔和一点，适合夜里轻松玩。", board: "#d8f0ff", cell: "#f8d7e9", line: "rgba(81, 124, 155, 0.35)", hover: "#e9f7ff", border: "#8fc7e8" },
+  { id: "midnight", name: "深夜蓝", description: "暗色棋盘，不刺眼。", board: "#172339", cell: "#24395d", line: "rgba(159, 190, 255, 0.24)", hover: "#2f4a78", border: "#6b8dd6" },
+  { id: "wood", name: "木纹棕", description: "温暖桌游感。", board: "#9a6a3d", cell: "#b8844d", line: "rgba(78, 46, 20, 0.45)", hover: "#c89459", border: "#7a4e2a" },
+  { id: "neon", name: "霓虹紫", description: "更游戏感，适合整活。", board: "#24133e", cell: "#43206f", line: "rgba(244, 157, 255, 0.34)", hover: "#5b2b94", border: "#f49dff" }
+] as const;
+type OthelloBoardThemeId = typeof othelloBoardThemes[number]["id"];
 
 function randomUuid() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -56,6 +65,16 @@ async function connectSocketWithSession() {
 type MeState = { player: PublicPlayer; token: string; roomId?: string; room?: RoomSnapshot };
 type AnnouncementPayload = { id: string; message: string; durationMs: number; createdAt: number };
 
+function todayKey() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
+function dailyAnnouncementSeenKey(config: AppConfig) {
+  const daily = config.dailyAnnouncement;
+  return `${todayKey()}|${daily.version}|${daily.title}|${daily.content}`;
+}
+
 function isAdminRoute() {
   return window.location.hash === "#admin" || window.location.pathname.replace(/\/$/, "").endsWith("/admin");
 }
@@ -87,6 +106,13 @@ function scrollToBottomSoon(element: HTMLElement) {
   window.requestAnimationFrame(() => {
     element.scrollTop = element.scrollHeight;
   });
+}
+
+function stickChatToBottom(element: HTMLElement | null, stickRef: MutableRefObject<boolean>, setSticking: (value: boolean) => void) {
+  if (!element) return;
+  stickRef.current = true;
+  setSticking(true);
+  scrollToBottomSoon(element);
 }
 
 async function compressImageForUpload(file: File) {
@@ -158,7 +184,12 @@ function playerSyncKey(player: PublicPlayer) {
     player.extremeModeToggledAt || 0,
     player.extremeModeCooldownUntil || 0,
     player.extremeWinStreak || 0,
-    player.extremeLastDecayHour || 0
+    player.extremeLastDecayHour || 0,
+    player.extremeForceClosed ? "1" : "0",
+    player.extremeForceClosedAt || 0,
+    player.extremeRenameProtectedUntil || 0,
+    player.extremeRenamedBy || "",
+    player.extremeRenamedByName || ""
   ].join("|");
 }
 
@@ -181,6 +212,7 @@ export function App() {
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [announcement, setAnnouncement] = useState<AnnouncementPayload | null>(null);
+  const [dailyAnnouncementOpen, setDailyAnnouncementOpen] = useState(false);
   const [connectionState, setConnectionState] = useState<"connected" | "connecting" | "disconnected">(() => socket.connected ? "connected" : "connecting");
   const [theme, setTheme] = useState<"light" | "dark">(() => (localStorage.getItem("rps-online-theme") === "dark" ? "dark" : "light"));
   const restoreInFlightRef = useRef(false);
@@ -305,10 +337,26 @@ export function App() {
   }, [notice]);
 
   useEffect(() => {
+    if (!config) return;
+    if (!config.dailyAnnouncement.enabled) {
+      setDailyAnnouncementOpen(false);
+      return;
+    }
+    const seenKey = dailyAnnouncementSeenKey(config);
+    setDailyAnnouncementOpen(localStorage.getItem(dailyAnnouncementKey) !== seenKey);
+  }, [config]);
+
+  useEffect(() => {
     if (!announcement) return;
     const timer = window.setTimeout(() => setAnnouncement(null), announcement.durationMs);
     return () => window.clearTimeout(timer);
   }, [announcement]);
+
+  function closeDailyAnnouncement() {
+    if (!config) return;
+    localStorage.setItem(dailyAnnouncementKey, dailyAnnouncementSeenKey(config));
+    setDailyAnnouncementOpen(false);
+  }
 
   useEffect(() => {
     // 管理入口故意不放在普通页面按钮里：地址加 #admin，或按 Ctrl/Command + Shift + A。
@@ -377,6 +425,18 @@ export function App() {
             <p>{announcement.message}</p>
           </div>
           <button className="icon-button" type="button" aria-label="关闭公告" onClick={() => setAnnouncement(null)}>×</button>
+        </div>
+      )}
+      {dailyAnnouncementOpen && (
+        <div className="daily-announcement-backdrop" role="dialog" aria-modal="true" aria-labelledby="daily-announcement-title">
+          <section className="daily-announcement-card">
+            <div>
+              <span className="daily-announcement-kicker">📢 每日公告</span>
+              <h2 id="daily-announcement-title">{config.dailyAnnouncement.title}</h2>
+              <p>{config.dailyAnnouncement.content}</p>
+            </div>
+            <button className="primary" type="button" onClick={closeDailyAnnouncement}>{config.dailyAnnouncement.buttonText}</button>
+          </section>
         </div>
       )}
       {view === "login" && <Login config={config} onDone={(next) => {
@@ -523,9 +583,10 @@ function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lo
   const [suggestion, setSuggestion] = useState("");
   const suggestionListRef = useRef<HTMLDivElement | null>(null);
   const suggestionStickToBottomRef = useRef(true);
+  const [suggestionStickToBottom, setSuggestionStickToBottom] = useState(true);
   const visibleSuggestions = lobby.suggestions.slice(0, 50).reverse();
   const [now, setNow] = useState(Date.now());
-  const nameWarLosers = lobby.players.filter((player) => isNameWarLoserVisible(player, now));
+  const renameTargets = lobby.players.filter((player) => isRenameTargetVisible(player, now));
 
   useEffect(() => {
     const list = suggestionListRef.current;
@@ -533,7 +594,7 @@ function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lo
   }, [visibleSuggestions.length]);
 
   useEffect(() => {
-    if (!lobby.players.some((player) => !player.connected && isNameWarLoser(player) && player.disconnectedAt)) return;
+    if (!lobby.players.some((player) => !player.connected && isRenameTarget(player) && player.disconnectedAt)) return;
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, [lobby.players]);
@@ -608,7 +669,7 @@ function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lo
           {lobby.rooms.length === 0 && <p className="empty">还没有房间，先创建一个吧。</p>}
         </div>
         <div className="lobby-lower-grid">
-          <NameWarLoserPanel title={config.nameWar.loserPanelTitle} losers={nameWarLosers} me={me} onError={onError} />
+          <UniversalRenamePanel config={config} targets={renameTargets} me={me} onError={onError} />
           <GiveawayPanel config={config} players={lobby.players} me={me} onError={onError} />
         </div>
       </div>
@@ -616,9 +677,25 @@ function Lobby({ config, lobby, me, onError, onGoRoom }: { config: AppConfig; lo
         <Leaderboard title="在线积分榜" players={lobby.rankedLeaderboard} />
         <div className="panel lobby-message-board">
           <h2><MessageCircle size={18} /> 留言板</h2>
-          <div className="messages lobby-suggestion-messages" ref={suggestionListRef} onScroll={(event) => { suggestionStickToBottomRef.current = isNearScrollBottom(event.currentTarget); }}>
-            {visibleSuggestions.map((item) => <ChatBubble key={item.id} message={suggestionToMessage(item)} me={me} />)}
-            {lobby.suggestions.length === 0 && <p className="empty">还没有留言</p>}
+          <div className="chat-scroll-shell">
+            <div
+              className="messages lobby-suggestion-messages"
+              ref={suggestionListRef}
+              onScroll={(event) => {
+                const nextStick = isNearScrollBottom(event.currentTarget);
+                if (suggestionStickToBottomRef.current === nextStick) return;
+                suggestionStickToBottomRef.current = nextStick;
+                setSuggestionStickToBottom(nextStick);
+              }}
+            >
+              {visibleSuggestions.map((item) => <ChatBubble key={item.id} message={suggestionToMessage(item)} me={me} />)}
+              {lobby.suggestions.length === 0 && <p className="empty">还没有留言</p>}
+            </div>
+            {!suggestionStickToBottom && visibleSuggestions.length > 0 && (
+              <button type="button" className="chat-stick-button" onClick={() => stickChatToBottom(suggestionListRef.current, suggestionStickToBottomRef, setSuggestionStickToBottom)}>
+                ↓ 回到底部
+              </button>
+            )}
           </div>
           <div className="send-row">
             <input value={suggestion} onChange={(event) => setSuggestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") sendSuggestion(); }} placeholder="写下建议、bug 或新惩罚..." />
@@ -661,7 +738,8 @@ function CreateRoom({ config, me, onCreated, onCancel, onError }: { config: AppC
     stake: 5,
     enableRankMultiplier: false,
     rankMultiplier: 1,
-    enableExtremeRanked: false
+    enableExtremeRanked: false,
+    othelloBoardTheme: "classic"
   });
   const [customRoomName, setCustomRoomName] = useState(false);
 
@@ -695,13 +773,8 @@ function patch(next: Partial<RoomSettings>) {
         merged.name = next.gameId === "othello" ? defaultOthelloRoomName : defaultRoomName;
       }
       if (next.gameId === "othello" || merged.gameId === "othello") {
+        merged.othelloBoardTheme = merged.othelloBoardTheme || "classic";
         merged.enableBot = false;
-        merged.enablePunishment = false;
-        merged.punishmentSource = "system";
-        merged.punishmentIds = [];
-        merged.punishmentId = undefined;
-        merged.tieDoublePunish = false;
-        merged.requireOpponentConfirm = false;
       }
       if (next.punishmentSource === "player") {
         merged.enablePunishment = true;
@@ -742,12 +815,6 @@ function patch(next: Partial<RoomSettings>) {
       if (merged.gameId === "othello") {
         if (!([1, 2, 5, 10] as const).includes(merged.stake as 1 | 2 | 5 | 10)) merged.stake = 5;
         merged.enableBot = false;
-        merged.enablePunishment = false;
-        merged.punishmentSource = "system";
-        merged.punishmentIds = [];
-        merged.punishmentId = undefined;
-        merged.tieDoublePunish = false;
-        merged.requireOpponentConfirm = false;
         if (merged.enableExtremeRanked) {
           merged.enableRankMultiplier = false;
           merged.rankMultiplier = 1;
@@ -832,7 +899,34 @@ function patch(next: Partial<RoomSettings>) {
                 </button>
               ))}
             </div>
-            {settings.gameId === "othello" && <p className="hint">黑白棋支持真人 1v1、观战、聊天和普通排位；Bot、惩罚、倍率、极限模式会自动关闭。</p>}
+            {settings.gameId === "othello" && <p className="hint">黑白棋支持真人 1v1、观战、聊天、排位和惩罚；Bot 不开放，排位房会支持白给/上贡结算。</p>}
+            {settings.gameId === "othello" && (
+              <div className="othello-theme-grid">
+                {othelloBoardThemes.map((theme) => (
+                  <button
+                    type="button"
+                    className={`othello-theme-card ${settings.othelloBoardTheme === theme.id ? "active" : ""}`}
+                    key={theme.id}
+                    onClick={() => patch({ othelloBoardTheme: theme.id })}
+                    style={{
+                      "--theme-board": theme.board,
+                      "--theme-cell": theme.cell,
+                      "--theme-line": theme.line,
+                      "--theme-border": theme.border
+                    } as CSSProperties}
+                  >
+                    <span className="othello-theme-preview">
+                      <i />
+                      <i />
+                      <i />
+                      <i />
+                    </span>
+                    <strong>{theme.name}</strong>
+                    <small>{theme.description}</small>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <div className="create-section">
             <h3>基础</h3>
@@ -938,8 +1032,8 @@ function patch(next: Partial<RoomSettings>) {
           </div>
           <div className="create-section">
             <h3>惩罚</h3>
-            <Toggle label="惩罚模式" value={settings.enablePunishment} disabled={settings.gameId === "othello"} onChange={(value) => patch({ enablePunishment: value })} />
-            {settings.gameId === "othello" && <p className="hint">黑白棋 V1 暂不支持惩罚模式。</p>}
+            <Toggle label="惩罚模式" value={settings.enablePunishment} onChange={(value) => patch({ enablePunishment: value })} />
+            {settings.gameId === "othello" && <p className="hint">黑白棋惩罚会在终局、认输、逃跑或断线判负后触发；平局双罚开启时黑白棋平局双方都要惩罚。</p>}
             {settings.enablePunishment && (
               <>
                 <Select value={settings.punishmentSource || "system"} onChange={(value) => patch({ punishmentSource: value as RoomSettings["punishmentSource"] })} options={[
@@ -998,7 +1092,7 @@ function patch(next: Partial<RoomSettings>) {
 }
 
 function generateRoomName(config: AppConfig, settings: RoomSettings) {
-  if (settings.gameId === "othello") return defaultOthelloRoomName;
+  if (settings.gameId === "othello" && !settings.enablePunishment) return defaultOthelloRoomName;
   const pool = settings.punishmentSource === "player"
     ? config.playerPunishmentRoomNamePool
     : primaryPunishmentForSettings(config, settings)?.roomNamePool;
@@ -1123,6 +1217,7 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
   const [extraHistory, setExtraHistory] = useState<RoomSnapshot["roundHistory"]>([]);
   const chatListRef = useRef<HTMLDivElement | null>(null);
   const chatStickToBottomRef = useRef(true);
+  const [chatStickToBottom, setChatStickToBottom] = useState(true);
   const mySeat = room.seats.A?.id === me.id ? "A" : room.seats.B?.id === me.id ? "B" : null;
   const myChoice = mySeat ? room.phase === "result" ? undefined : localChoice || room.choices[mySeat] : undefined;
   const resultChoice = mySeat ? room.revealedChoices?.[mySeat] : undefined;
@@ -1165,6 +1260,12 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
     if (list && chatStickToBottomRef.current) scrollToBottomSoon(list);
   }, [displayedChatMessages.length, chatTab]);
 
+  useEffect(() => {
+    chatStickToBottomRef.current = true;
+    setChatStickToBottom(true);
+    if (chatListRef.current) scrollToBottomSoon(chatListRef.current);
+  }, [chatTab]);
+
   async function act(event: string, payload: unknown = {}) {
     try {
       await ask(event, payload);
@@ -1203,6 +1304,14 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
     }
   }
 
+  async function settleOthelloMove(mode: "normal" | "giveaway" | "tribute") {
+    try {
+      await ask("othello:settleMove", { mode });
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "结算失败");
+    }
+  }
+
   async function restartOthello() {
     try {
       await ask("othello:restart", {});
@@ -1216,6 +1325,31 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
       await ask("othello:ready", {});
     } catch (error) {
       onError(error instanceof Error ? error.message : "准备失败");
+    }
+  }
+
+  async function requestOthelloSurrender() {
+    try {
+      await ask("othello:requestSurrender", {});
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "申请认输失败");
+    }
+  }
+
+  async function respondOthelloSurrender(accept: boolean) {
+    try {
+      await ask("othello:respondSurrender", { accept });
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "处理认输失败");
+    }
+  }
+
+  async function escapeOthello() {
+    if (!window.confirm("确定要逃跑吗？本局会立即判负，并按剩余空格追加扣分。")) return;
+    try {
+      await ask("othello:escape", {});
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "逃跑失败");
     }
   }
 
@@ -1310,7 +1444,7 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
       <div className="room-content-grid">
         <div className="actions-panel panel">
           {room.settings.gameId === "othello" ? (
-            <OthelloPanel room={room} me={me} onMove={playOthello} onRestart={restartOthello} onReady={readyOthello} />
+            <OthelloPanel room={room} me={me} now={now} onMove={playOthello} onSettle={settleOthelloMove} onRestart={restartOthello} onReady={readyOthello} onRequestSurrender={requestOthelloSurrender} onRespondSurrender={respondOthelloSurrender} onEscape={escapeOthello} />
           ) : mySeat && (
             <div className="move-panel">
               <div>
@@ -1326,7 +1460,7 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
             </div>
           )}
           {canGoSpectate && <button onClick={() => act("room:spectate")}><Eye size={16} /> 去观战席</button>}
-          {room.settings.gameId === "rps" && room.phase === "punishment" && (
+          {room.phase === "punishment" && (
             <div className="punish-box">
               <div className="punish-head">
                 <span>🎲 惩罚阶段</span>
@@ -1334,8 +1468,10 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
               </div>
               <div className={`punishment-card-grid ${room.punishedPlayerIds.length === 1 ? "single" : "double"}`}>
                 {room.punishedPlayerIds.map((playerId) => {
+                  const punishedPlayer = roomPlayerById(room, playerId);
                   const proof = room.proofs.find((item) => item.playerId === playerId);
                   const task = room.roundHistory[0]?.punishmentTasks.find((item) => item.playerId === playerId);
+                  const taskAssignerPlayer = task?.assignedBy ? roomPlayerById(room, task.assignedBy) : undefined;
                   const isMine = playerId === me.id;
                   const taskText = proof?.redoTaskText || task?.taskText || "";
                   const taskAssigned = Boolean(taskText.trim());
@@ -1349,14 +1485,14 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
                   return (
                     <div className="punishment-card" key={playerId}>
                       <div className="punishment-card-title">
-                        <h4>{punishedPlayerName(room, playerId)} {isMine ? "（你）" : ""}</h4>
+                        <h4>{punishedPlayer ? <PlayerBadge player={punishedPlayer} compact /> : punishedPlayerName(room, playerId)} {isMine ? "（你）" : ""}</h4>
                         <em>{proof?.status === "approved" ? "已完成" : proof?.status === "pending" ? "待审核" : proof?.status === "rejected" ? "重做中" : taskAssigned ? "待提交" : "等任务"}</em>
                       </div>
                       {taskAssigned && task && (
                         <div className={`task-card designed-task-card ${task.backgroundImage ? "has-task-background" : ""}`} style={taskCardStyle}>
                           <b>{isMine ? "你的任务" : "对方任务"}</b>
                           <p>{taskTextOnly(taskText, task.factionLabel)}</p>
-                          {task.assignedByName && <small>发布者：{task.assignedByName}</small>}
+                          {(taskAssignerPlayer || task.assignedByName) && <small>发布者：{taskAssignerPlayer ? displayPlayerName(taskAssignerPlayer) : task.assignedByName}</small>}
                         </div>
                       )}
                       {!taskAssigned && room.settings.punishmentSource === "player" && (
@@ -1384,6 +1520,7 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
                         <div className="proof-submit-card">
                           <b>{proof?.status === "rejected" ? "重新提交证明" : "提交完成证明"}</b>
                           <textarea value={proofText} onChange={(event) => setProofText(event.target.value)} placeholder={proof?.status === "rejected" ? "重新提交你的惩罚完成证明" : "写下你的惩罚完成证明"} />
+                          <p className="hint">文字证明必须填写；照片证明可以不交。</p>
                           {room.settings.allowProofImage !== false ? (
                             <>
                               <label className="upload">
@@ -1435,9 +1572,25 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
                 <button className={chatTab === "lobby" ? "active" : ""} onClick={() => setChatTab("lobby")}>大厅</button>
               </div>
             </div>
-            <div className="messages room-chat-messages" ref={chatListRef} onScroll={(event) => { chatStickToBottomRef.current = isNearScrollBottom(event.currentTarget); }}>
-              {displayedChatMessages.map((item) => <ChatBubble key={item.id} message={item} me={me} />)}
-              {displayedChatMessages.length === 0 && <p className="empty">{chatTab === "room" ? "还没有房间聊天" : "大厅还没有留言"}</p>}
+            <div className="chat-scroll-shell">
+              <div
+                className="messages room-chat-messages"
+                ref={chatListRef}
+                onScroll={(event) => {
+                  const nextStick = isNearScrollBottom(event.currentTarget);
+                  if (chatStickToBottomRef.current === nextStick) return;
+                  chatStickToBottomRef.current = nextStick;
+                  setChatStickToBottom(nextStick);
+                }}
+              >
+                {displayedChatMessages.map((item) => <ChatBubble key={item.id} message={item} me={me} />)}
+                {displayedChatMessages.length === 0 && <p className="empty">{chatTab === "room" ? "还没有房间聊天" : "大厅还没有留言"}</p>}
+              </div>
+              {!chatStickToBottom && displayedChatMessages.length > 0 && (
+                <button type="button" className="chat-stick-button" onClick={() => stickChatToBottom(chatListRef.current, chatStickToBottomRef, setChatStickToBottom)}>
+                  ↓ 回到底部
+                </button>
+              )}
             </div>
             {chatTab === "room" ? (
               <div className="send-row">
@@ -1487,15 +1640,22 @@ function OthelloScore({ room }: { room: RoomSnapshot }) {
   );
 }
 
-function OthelloPanel({ room, me, onMove, onRestart, onReady }: { room: RoomSnapshot; me: PublicPlayer; onMove: (row: number, col: number) => void; onRestart: () => void; onReady: () => void }) {
+function OthelloPanel({ room, me, now, onMove, onSettle, onRestart, onReady, onRequestSurrender, onRespondSurrender, onEscape }: { room: RoomSnapshot; me: PublicPlayer; now: number; onMove: (row: number, col: number) => void; onSettle: (mode: "normal" | "giveaway" | "tribute") => void; onRestart: () => void; onReady: () => void; onRequestSurrender: () => void; onRespondSurrender: (accept: boolean) => void; onEscape: () => void }) {
   const state = room.othello;
+  const boardTheme = othelloThemeStyle(room.settings.othelloBoardTheme);
   const mySeat = room.seats.A?.id === me.id ? "A" : room.seats.B?.id === me.id ? "B" : null;
-  const isMyTurn = Boolean(state && mySeat && state.turn === mySeat && room.phase === "choosing" && !state.ended);
+  const pending = state?.pendingSettlement;
+  const isMyTurn = Boolean(state && mySeat && state.turn === mySeat && room.phase === "choosing" && !state.ended && !pending);
   const legalKeys = new Set((state?.legalMoves || []).map((move) => `${move.row}-${move.col}`));
   const turnName = state?.turn === "A" ? occupantDisplay(room.seats.A) : occupantDisplay(room.seats.B);
   const waitingForReady = room.phase === "ready" && Boolean(room.seats.A && room.seats.B);
   const drawingFirst = waitingForReady && room.ready.A && room.ready.B;
   const myReady = mySeat ? room.ready[mySeat] : false;
+  const canSurrender = Boolean(mySeat && state && room.phase === "choosing" && !state.ended && !pending);
+  const surrenderRequest = state?.surrenderRequest;
+  const surrenderFromMe = Boolean(mySeat && surrenderRequest?.fromSeat === mySeat);
+  const surrenderToMe = Boolean(mySeat && surrenderRequest?.toSeat === mySeat);
+  const surrenderFromName = surrenderRequest ? occupantDisplay(room.seats[surrenderRequest.fromSeat]) : "";
   const blackSeat = state?.blackSeat;
   const whiteSeat = blackSeat ? (blackSeat === "A" ? "B" : "A") : null;
   return (
@@ -1512,7 +1672,7 @@ function OthelloPanel({ room, me, onMove, onRestart, onReady }: { room: RoomSnap
                   ? "双方准备后随机决定谁执黑先手。"
                   : state?.ended
                     ? room.resultText || "对局结束"
-                    : isMyTurn ? "轮到你落子。" : `轮到 ${turnName} 落子。`}
+                    : pending ? "正在结算本手白给/上贡。" : isMyTurn ? "轮到你落子。" : `轮到 ${turnName} 落子。`}
           </p>
         </div>
         {state && (
@@ -1538,8 +1698,41 @@ function OthelloPanel({ room, me, onMove, onRestart, onReady }: { room: RoomSnap
           {mySeat && myReady && !drawingFirst && <button disabled>等待对方</button>}
         </div>
       )}
-      {state?.ended && mySeat && <button className="primary othello-restart-button" onClick={onRestart}>再来一局</button>}
-      <div className="othello-board" role="grid" aria-label="黑白棋棋盘">
+      {state?.ended && mySeat && room.phase === "result" && <button className="primary othello-restart-button" onClick={onRestart}>再来一局</button>}
+      {canSurrender && surrenderRequest && (
+        <div className={`othello-surrender-card ${surrenderToMe ? "needs-action" : ""}`}>
+          <div>
+            <strong>{surrenderFromMe ? "已申请认输" : `${surrenderFromName} 申请认输`}</strong>
+            <p className="hint">{surrenderFromMe ? "等待对方确认；对局状态会保持不变。" : "你可以同意结束本局，或拒绝后继续下棋。"}</p>
+          </div>
+          {surrenderToMe && (
+            <div className="othello-surrender-actions">
+              <button className="primary" onClick={() => onRespondSurrender(true)}>同意认输</button>
+              <button className="soft-button" onClick={() => onRespondSurrender(false)}>拒绝，继续下棋</button>
+            </div>
+          )}
+        </div>
+      )}
+      {canSurrender && (
+        <div className="othello-risk-actions">
+          <button className="soft-button othello-surrender-button" disabled={Boolean(surrenderRequest)} onClick={onRequestSurrender}>
+            申请认输
+          </button>
+          <button className="soft-button danger-soft othello-surrender-button" onClick={onEscape}>
+            逃跑
+          </button>
+        </div>
+      )}
+      {pending && (
+        <OthelloSettlementCard
+          room={room}
+          me={me}
+          pending={pending}
+          now={now}
+          onSettle={onSettle}
+        />
+      )}
+      <div className="othello-board" role="grid" aria-label="黑白棋棋盘" style={boardTheme}>
         {(state?.board || Array.from({ length: 8 }, () => Array.from({ length: 8 }, () => null))).map((row, rowIndex) => row.map((cell, colIndex) => {
           const legal = legalKeys.has(`${rowIndex}-${colIndex}`);
           return (
@@ -1566,10 +1759,55 @@ function OthelloPanel({ room, me, onMove, onRestart, onReady }: { room: RoomSnap
   );
 }
 
+function othelloThemeStyle(themeId?: RoomSettings["othelloBoardTheme"]): CSSProperties {
+  const theme = othelloBoardThemes.find((item) => item.id === themeId) || othelloBoardThemes[0];
+  return {
+    "--othello-board": theme.board,
+    "--othello-cell": theme.cell,
+    "--othello-line": theme.line,
+    "--othello-hover": theme.hover,
+    "--othello-border": theme.border
+  } as CSSProperties;
+}
+
 function othelloDeltaText(state: NonNullable<RoomSnapshot["othello"]>, color: "black" | "white") {
   const seat = color === "black" ? state.blackSeat : state.blackSeat === "A" ? "B" : "A";
   const delta = state.rankedDelta?.[seat] || 0;
   return `${delta >= 0 ? "+" : ""}${delta}`;
+}
+
+function OthelloSettlementCard({ room, me, pending, now, onSettle }: { room: RoomSnapshot; me: PublicPlayer; pending: NonNullable<NonNullable<RoomSnapshot["othello"]>["pendingSettlement"]>; now: number; onSettle: (mode: "normal" | "giveaway" | "tribute") => void }) {
+  const isMine = room.seats[pending.seat]?.id === me.id;
+  const actorName = occupantDisplay(room.seats[pending.seat]);
+  const opponentName = occupantDisplay(room.seats[pending.opponentSeat]);
+  const secondsLeft = Math.max(0, Math.ceil((pending.expiresAt - now) / 1000));
+  const forcedText = pending.forced === "tribute" ? "强制上贡" : pending.forced === "giveaway" ? "强制白给" : "";
+  return (
+    <div className={`othello-settlement-card ${pending.forced ? "forced" : ""}`}>
+      <div>
+        <strong>{pending.forced ? forcedText : isMine ? "选择本手结算" : "等待本手结算"}</strong>
+        <p className="hint">
+          {actorName} 本手翻 {pending.flips} 子，基础分 {pending.stake}。
+          {pending.forced ? ` ${forcedText}将在 ${secondsLeft} 秒后自动结算。` : isMine ? ` ${secondsLeft} 秒后自动选择不白给。` : ` 等待 ${actorName} 选择，${secondsLeft} 秒后默认不白给。`}
+        </p>
+      </div>
+      {pending.forced ? (
+        <div className="othello-settlement-forced">
+          <span>{pending.forced === "tribute" ? "🎁 上贡给对方" : "🫴 白给本手"}</span>
+        </div>
+      ) : isMine ? (
+        <div className="othello-settlement-actions">
+          <button className="primary" onClick={() => onSettle("normal")}>不白给</button>
+          <button className="soft-button" onClick={() => onSettle("giveaway")}>白给 +{formatGiveawayValue(pending.flips * 0.1)}%</button>
+          <button className="soft-button danger-soft" onClick={() => onSettle("tribute")}>上贡给 {opponentName} +{formatGiveawayValue(pending.flips * 0.2)}%</button>
+        </div>
+      ) : (
+        <div className="othello-settlement-forced">
+          <span>⏳ 等待选择</span>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function occupantDisplay(occupant: SeatOccupant) {
@@ -1698,11 +1936,19 @@ function PunishmentStatus({ proof, isMine, requireConfirm }: { proof: RoomSnapsh
 
 function punishedPlayerNames(room: RoomSnapshot) {
   const players = roomPlayerList(room).map((item) => item.player);
-  return room.punishedPlayerIds.map((id) => players.find((player) => player.id === id)?.name || id);
+  return room.punishedPlayerIds.map((id) => {
+    const player = players.find((item) => item.id === id);
+    return player ? displayPlayerName(player) : id;
+  });
+}
+
+function roomPlayerById(room: RoomSnapshot, playerId: string) {
+  return roomPlayerList(room).map((item) => item.player).find((player) => player.id === playerId);
 }
 
 function punishedPlayerName(room: RoomSnapshot, playerId: string) {
-  return roomPlayerList(room).map((item) => item.player).find((player) => player.id === playerId)?.name || playerId;
+  const player = roomPlayerById(room, playerId);
+  return player ? displayPlayerName(player) : playerId;
 }
 
 function taskTextOnly(taskText: string, factionLabel?: string) {
@@ -1789,6 +2035,9 @@ function SeatView({ seat, room, me, now, onSit }: { seat: SeatKey; room: RoomSna
   const stats = room.seatStats[seat];
   const battleSeatBlocked = Boolean(room.settings.enableRanked && Boolean(me.extremeModeEnabled) !== Boolean(room.settings.enableExtremeRanked));
   const othelloTurn = room.settings.gameId === "othello" && room.othello?.turn === seat && room.phase === "choosing" && !room.othello.ended;
+  const othelloColorLabel = room.settings.gameId === "othello" && room.othello
+    ? room.othello.blackSeat === seat ? "⚫ 黑棋" : "⚪ 白棋"
+    : seat === "A" ? "随机后显示黑/白" : "随机后显示黑/白";
   return (
     <div className={`seat-card seat-${seat.toLowerCase()}`}>
       <div className="seat-identity">
@@ -1798,7 +2047,7 @@ function SeatView({ seat, room, me, now, onSit }: { seat: SeatKey; room: RoomSna
       {occupant && !("isBot" in occupant) && <OfflineBadge player={occupant} now={now} />}
       <p className="choice-badge">
         {room.settings.gameId === "othello"
-          ? seat === "A" ? othelloTurn ? "⚫ 黑棋落子中" : "⚫ 黑棋" : othelloTurn ? "⚪ 白棋落子中" : "⚪ 白棋"
+          ? othelloTurn ? `${othelloColorLabel}落子中` : othelloColorLabel
           : choice ? choiceText(choice) : room.seats.A && room.seats.B ? "🤔 等待出拳" : "⏳ 等人"}
       </p>
       {occupant && !("isBot" in occupant) && <SeatStatsView stats={stats} />}
@@ -1828,10 +2077,10 @@ function historyResultText(result: RoundResult) {
 
 type RoomInfoTagView = { key: string; text: string; style: RoomInfoTagStyle };
 
-function roomInfoTag(config: AppConfig, key: string, extra = ""): RoomInfoTagView {
+function roomInfoTag(config: AppConfig, key: string, extra = "", prefix = ""): RoomInfoTagView {
   const fallback: RoomInfoTagStyle = { label: key, textColor: "#4d5c6f", backgroundColor: "#eef3f8", borderColor: "#c9d6e4" };
   const style = config.roomInfoTags?.[key] || fallback;
-  return { key: `${key}-${extra}`, text: `${style.label}${extra}`, style };
+  return { key: `${key}-${extra}`, text: `${prefix}${style.label}${extra}`, style };
 }
 
 function punishmentInfoTag(config: AppConfig, room: RoomSnapshot) {
@@ -1884,14 +2133,9 @@ function lobbyRoomInfoTags(config: AppConfig, room: LobbySnapshot["rooms"][numbe
 }
 
 function gameInfoTag(config: AppConfig, gameId: RoomSettings["gameId"]) {
-  const game = config.games.find((item) => item.id === gameId);
-  return {
-    key: `game-${gameId}`,
-    text: gameId === "othello" ? `⚫⚪ ${game?.name || "黑白棋"}` : game?.name || "锤子剪刀布",
-    style: gameId === "othello"
-      ? { label: "黑白棋", textColor: "#163c32", backgroundColor: "#dff7ec", borderColor: "#93d8b8" }
-      : { label: "锤子剪刀布", textColor: "#4d5c6f", backgroundColor: "#eef3f8", borderColor: "#c9d6e4" }
-  };
+  return gameId === "othello"
+    ? roomInfoTag(config, "gameOthello", "", "⚫⚪ ")
+    : roomInfoTag(config, "gameRps");
 }
 
 function punishmentSelectionText(config: AppConfig, settings: Pick<RoomSettings, "punishmentId" | "punishmentIds">) {
@@ -2132,27 +2376,44 @@ function isNameWarLoserVisible(player: PublicPlayer, now = Date.now()) {
   return Boolean(player.disconnectedAt && now - player.disconnectedAt <= 1_800_000);
 }
 
+function isExtremeRenameTarget(player: PublicPlayer) {
+  return Boolean(player.extremeForceClosed);
+}
+
+function isRenameTarget(player: PublicPlayer) {
+  return isNameWarLoser(player) || isExtremeRenameTarget(player);
+}
+
+function isRenameTargetVisible(player: PublicPlayer, now = Date.now()) {
+  if (!isRenameTarget(player)) return false;
+  if (player.connected) return true;
+  return Boolean(player.disconnectedAt && now - player.disconnectedAt <= 1_800_000);
+}
+
 function nameWarRenameQuotaLeft(player: PublicPlayer, now = Date.now()) {
   if (!player.nameWarRenameWindowStartedAt || now - player.nameWarRenameWindowStartedAt >= 10_800_000) return 3;
   return Math.max(0, 3 - (player.nameWarRenameCount || 0));
 }
 
-function NameWarLoserPanel({ title, losers, me, onError }: { title: string; losers: PublicPlayer[]; me: PublicPlayer; onError: (message: string) => void }) {
+function UniversalRenamePanel({ config, targets, me, onError }: { config: AppConfig; targets: PublicPlayer[]; me: PublicPlayer; onError: (message: string) => void }) {
   const [inputs, setInputs] = useState<Record<string, string>>({});
   const [now, setNow] = useState(Date.now());
-  const canRename = me.stats.rankedPoints >= 500 && nameWarRenameQuotaLeft(me, now) > 0;
+  const nameWarQuota = nameWarRenameQuotaLeft(me, now);
+  const canNameWarRename = me.stats.rankedPoints >= 500 && nameWarQuota > 0;
+  const extremeMinPoints = Math.max(1, Math.round(config.extremeMode.forceRenameMinPoints || 1));
+  const canExtremeRename = Boolean(me.extremeModeEnabled && me.stats.rankedPoints >= extremeMinPoints);
 
   useEffect(() => {
-    if (!losers.some((player) => player.nameWarRenameProtectedUntil && player.nameWarRenameProtectedUntil > now)) return;
+    if (!targets.some((player) => (player.nameWarRenameProtectedUntil && player.nameWarRenameProtectedUntil > now) || (player.extremeRenameProtectedUntil && player.extremeRenameProtectedUntil > now))) return;
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
     return () => window.clearInterval(timer);
-  }, [losers, now]);
+  }, [targets, now]);
 
-  async function renameTarget(targetId: string) {
+  async function renameTarget(targetId: string, kind: "nameWar" | "extreme") {
     const name = (inputs[targetId] || "").trim();
     if (!name) return;
     try {
-      await ask("nameWar:renameTarget", { targetId, name });
+      await ask("nameWar:renameTarget", { targetId, name, kind });
       setInputs((old) => ({ ...old, [targetId]: "" }));
       onError("名字修改成功");
     } catch (error) {
@@ -2162,33 +2423,51 @@ function NameWarLoserPanel({ title, losers, me, onError }: { title: string; lose
 
   return (
     <div className="panel name-war-loser-panel">
-      <h2>🏷️ {title || "名字争夺战失格者"}</h2>
-      <p className="hint">500 分以上玩家可抢先改名；你剩余 {nameWarRenameQuotaLeft(me, now)} / 3 次。</p>
+      <h2>🏷️ {config.nameWar.renamePanelTitle || config.nameWar.loserPanelTitle || "通用改名处"}</h2>
+      <p className="hint">名争改名需要 500 分以上，你剩余 {nameWarQuota} / 3 次；极限强关改名需要开启极限模式且至少 {extremeMinPoints} 分。</p>
       <div className="name-war-loser-list">
-        {losers.map((player) => {
-          const protectedMs = player.nameWarRenameProtectedUntil ? Math.max(0, player.nameWarRenameProtectedUntil - now) : 0;
+        {targets.map((player) => {
+          const nameWarTarget = isNameWarLoser(player);
+          const extremeTarget = isExtremeRenameTarget(player);
+          const nameWarProtectedMs = player.nameWarRenameProtectedUntil ? Math.max(0, player.nameWarRenameProtectedUntil - now) : 0;
+          const extremeProtectedMs = player.extremeRenameProtectedUntil ? Math.max(0, player.extremeRenameProtectedUntil - now) : 0;
           const offlineKeepMs = !player.connected && player.disconnectedAt ? Math.max(0, 1_800_000 - (now - player.disconnectedAt)) : 0;
-          const protectedText = protectedMs > 0 ? `保护中 ${Math.ceil(protectedMs / 3_600_000)} 小时` : "可被改名";
-          const disabled = !canRename || player.id === me.id || protectedMs > 0;
+          const nameWarProtectedText = nameWarProtectedMs > 0 ? `名争保护 ${Math.ceil(nameWarProtectedMs / 3_600_000)} 小时` : "名争可改";
+          const extremeProtectedText = extremeProtectedMs > 0 ? `极限保护 ${Math.ceil(extremeProtectedMs / 3_600_000)} 小时` : "极限可改";
+          const inputValue = inputs[player.id] || "";
+          const selfTarget = player.id === me.id;
+          const nameWarDisabled = !nameWarTarget || !canNameWarRename || selfTarget || nameWarProtectedMs > 0;
+          const extremeDisabled = !extremeTarget || !canExtremeRename || selfTarget || extremeProtectedMs > 0;
           return (
             <div className="name-war-loser-card" key={player.id}>
               <div className="admin-card-title">
                 <strong>{player.nameWarPenaltyName || player.name}</strong>
                 <small>
                   <span className={`online-dot ${player.connected ? "online" : "offline"}`}>{player.connected ? "在线" : "离线"}</span>
-                  {player.stats.rankedPoints} 分 · {protectedText}
+                  {player.stats.rankedPoints} 分
                 </small>
               </div>
+              <div className="room-info-tags">
+                {nameWarTarget && <span className="room-info-tag">⚔️ {config.nameWar.nameWarLoserLabel || "名争失格"}</span>}
+                {extremeTarget && <span className="room-info-tag">⚡ {config.nameWar.extremeForceClosedLabel || "极限强关"}</span>}
+              </div>
+              <p className="hint">
+                {nameWarTarget ? nameWarProtectedText : ""}
+                {nameWarTarget && extremeTarget ? " · " : ""}
+                {extremeTarget ? extremeProtectedText : ""}
+              </p>
               {offlineKeepMs > 0 && <p className="hint">离线保留：约 {Math.ceil(offlineKeepMs / 60_000)} 分钟后从名单隐藏。</p>}
-              {player.nameWarRenamedByName && <p className="hint">最后改名者：{player.nameWarRenamedByName}</p>}
+              {player.nameWarRenamedByName && <p className="hint">名争最后改名者：{player.nameWarRenamedByName}</p>}
+              {player.extremeRenamedByName && <p className="hint">极限最后改名者：{player.extremeRenamedByName}</p>}
               <div className="send-row">
-                <input value={inputs[player.id] || ""} maxLength={12} disabled={disabled} onChange={(event) => setInputs((old) => ({ ...old, [player.id]: event.target.value }))} placeholder={disabled ? "暂时不能改名" : "输入新名字"} />
-                <button disabled={disabled} onClick={() => renameTarget(player.id)}>提交</button>
+                <input value={inputValue} maxLength={12} disabled={selfTarget || (!nameWarTarget && !extremeTarget)} onChange={(event) => setInputs((old) => ({ ...old, [player.id]: event.target.value }))} placeholder={selfTarget ? "不能改自己的名字" : "输入新名字"} />
+                {nameWarTarget && <button disabled={nameWarDisabled || !inputValue.trim()} onClick={() => renameTarget(player.id, "nameWar")}>名争改名</button>}
+                {extremeTarget && <button disabled={extremeDisabled || !inputValue.trim()} onClick={() => renameTarget(player.id, "extreme")}>极限改名</button>}
               </div>
             </div>
           );
         })}
-        {losers.length === 0 && <p className="empty">暂无失格者</p>}
+        {targets.length === 0 && <p className="empty">暂无可改名目标</p>}
       </div>
     </div>
   );
@@ -2381,6 +2660,19 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
     }
   }
 
+  async function forceCloseExtremeMode() {
+    const ok = window.confirm(config.extremeMode.forceCloseWarning || "强行关闭极限模式后，你会进入通用改名处，可被符合条件的极限玩家改名。确认继续？");
+    if (!ok) return;
+    try {
+      const result = await ask<{ player: PublicPlayer }>("extreme:forceClose", {});
+      setExtremeModeEnabled(false);
+      onUpdated(result.player);
+      onError("已强行关闭极限模式");
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "强行关闭失败");
+    }
+  }
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <section className="profile-panel" onClick={(event) => event.stopPropagation()}>
@@ -2441,8 +2733,9 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
               <small>{me.giveawayEnabled ? `${formatGiveawayValue(giveawayValue)}%` : "未开启"}</small>
             </div>
             <Toggle label="开启白给模式" value={giveawayEnabled} disabled={giveawayCannotClose} onChange={setGiveawayEnabled} />
-            <p className="hint">开启后，真人对战会按白给值概率触发强制白给；Bot 对战不显示按钮，也不会触发。</p>
+            <p className="hint">开启后，锤子剪刀布真人对战会按白给值概率触发强制白给；黑白棋排位落子后可选择不白给、白给或上贡。</p>
             <p className="hint">出拳区点击“白给”会让白给值 +2%，触发强制白给后也会 +2%，最高 100%。</p>
+            <p className="hint">黑白棋白给会让本手翻子不结算排位分并按 0.1%/子增加白给值；上贡会把本手分数给对面并按 0.2%/子增加白给值。</p>
             <p className="hint">白给值归零后，才可以关闭这个模式。可以在大厅的白给自救板提交宣言，等待其他玩家点赞帮你降低。</p>
             {giveawayCannotClose && <p className="hint danger-hint">当前还有 {formatGiveawayValue(giveawayValue)}% 白给值，暂时不能关闭。</p>}
           </div>
@@ -2458,7 +2751,12 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
             <p className="hint">极限排位连胜达到 {config.extremeMode.winStreakThreshold} 局后，每次继续获胜都有 {Math.round(config.extremeMode.winStreakCrashChance * 100)}% 几率额外扣 {config.extremeMode.crashTargetPoints} 分。</p>
             {me.stats.rankedPoints < 0 && !me.extremeModeEnabled && <p className="hint danger-hint">你当前是负分，不能开启极限模式。</p>}
             {extremeCannotClose && <p className="hint danger-hint">排位分必须大于 0 才能关闭极限模式，0 分不能关闭。</p>}
+            {me.extremeForceClosed && <p className="hint danger-hint">你曾强行关闭极限模式，已进入通用改名处。</p>}
+            {me.extremeRenameProtectedUntil && me.extremeRenameProtectedUntil > now && <p className="hint">极限改名保护中：约 {Math.ceil((me.extremeRenameProtectedUntil - now) / 3_600_000)} 小时。</p>}
             {extremeCooldownMs > 0 && <p className="hint">关闭后冷却：约 {extremeCooldownHours} 小时后可重新开启。</p>}
+            {me.extremeModeEnabled && (
+              <button type="button" className="danger-button" onClick={forceCloseExtremeMode}>强行关闭极限模式</button>
+            )}
           </div>
           <div className="profile-action-row">
             <button className="primary" disabled={(nameChanged && (cooldownMs > 0 || nameLockedByWar)) || ((nameWarChanged || nameWarAllowRenameChanged) && nameWarCooldownMs > 0) || giveawayCannotClose || extremeCannotEnable || extremeCannotClose} onClick={saveProfile}><Save size={16} /> 保存个人资料</button>
@@ -2471,8 +2769,11 @@ function ProfilePanel({ config, me, onClose, onUpdated, onError }: { config: App
 }
 
 type AdminSection = "site" | "factions" | "titles" | "punishments" | "roomTags" | "roomInfoTags" | "nameWar" | "giveaway" | "extremeMode" | "accessControl" | "bots" | "messages" | "actions" | "advanced";
+type AdminActionTab = "online" | "offline" | "rooms" | "announcement";
 
 const roomInfoTagOrder = [
+  { key: "gameRps", label: "锤子剪刀布" },
+  { key: "gameOthello", label: "黑白棋" },
   { key: "phaseReady", label: "等待坐满" },
   { key: "phaseChoosing", label: "出拳中" },
   { key: "phaseResult", label: "结算中" },
@@ -2505,6 +2806,7 @@ function AdminPanel({ config, lobby, onBack, onError }: { config: AppConfig; lob
   const [punishmentSearch, setPunishmentSearch] = useState("");
   const [announcementMessage, setAnnouncementMessage] = useState("");
   const [announcementSeconds, setAnnouncementSeconds] = useState("8");
+  const [activeActionTab, setActiveActionTab] = useState<AdminActionTab>("online");
   const [configText, setConfigText] = useState(JSON.stringify(config, null, 2));
   const [dirty, setDirty] = useState(false);
   const [serverConfigChanged, setServerConfigChanged] = useState(false);
@@ -3005,11 +3307,11 @@ function AdminPanel({ config, lobby, onBack, onError }: { config: AppConfig; lob
       const preview = `${draft.nameWar.penaltyPrefix || "失名者"}-A7K2`;
       return (
         <div className="config-section admin-section-card">
-          <AdminSectionHeader title="名字争夺战" subtitle="设置惩罚名前缀、失格者面板标题和退出高难度后的称号。" />
+          <AdminSectionHeader title="名字争夺战" subtitle="设置惩罚名前缀、通用改名处标题和退出高难度后的称号。" />
           <div className="admin-preview-card">
             <span>预览</span>
             <strong>{preview}</strong>
-            <p>{draft.nameWar.loserPanelTitle || "名字争夺战失格者"} · 退出高难度称号：{draft.nameWar.escapeTitle || "逃跑的人"}</p>
+            <p>{draft.nameWar.renamePanelTitle || draft.nameWar.loserPanelTitle || "通用改名处"} · {draft.nameWar.nameWarLoserLabel || "名争失格"} / {draft.nameWar.extremeForceClosedLabel || "极限强关"} · 退出高难度称号：{draft.nameWar.escapeTitle || "逃跑的人"}</p>
           </div>
           <div className="config-row">
             <label className="field-label">
@@ -3017,8 +3319,20 @@ function AdminPanel({ config, lobby, onBack, onError }: { config: AppConfig; lob
               <input value={draft.nameWar.penaltyPrefix} maxLength={16} onChange={(event) => patch({ nameWar: { ...draft.nameWar, penaltyPrefix: event.target.value } })} placeholder="例如：失名者" />
             </label>
             <label className="field-label">
-              <span>大厅失格者面板标题</span>
+              <span>旧失格者面板标题</span>
               <input value={draft.nameWar.loserPanelTitle} maxLength={24} onChange={(event) => patch({ nameWar: { ...draft.nameWar, loserPanelTitle: event.target.value } })} placeholder="名字争夺战失格者" />
+            </label>
+            <label className="field-label">
+              <span>通用改名处标题</span>
+              <input value={draft.nameWar.renamePanelTitle || ""} maxLength={24} onChange={(event) => patch({ nameWar: { ...draft.nameWar, renamePanelTitle: event.target.value } })} placeholder="通用改名处" />
+            </label>
+            <label className="field-label">
+              <span>名争来源标签</span>
+              <input value={draft.nameWar.nameWarLoserLabel || ""} maxLength={16} onChange={(event) => patch({ nameWar: { ...draft.nameWar, nameWarLoserLabel: event.target.value } })} placeholder="名争失格" />
+            </label>
+            <label className="field-label">
+              <span>极限强关标签</span>
+              <input value={draft.nameWar.extremeForceClosedLabel || ""} maxLength={16} onChange={(event) => patch({ nameWar: { ...draft.nameWar, extremeForceClosedLabel: event.target.value } })} placeholder="极限强关" />
             </label>
             <label className="field-label">
               <span>退出高难度称号</span>
@@ -3080,7 +3394,13 @@ function AdminPanel({ config, lobby, onBack, onError }: { config: AppConfig; lob
             <label className="field-label"><span>连胜阈值</span><input type="number" min={1} max={100} value={extreme.winStreakThreshold} onChange={(event) => patchExtreme({ ...extreme, winStreakThreshold: Number(event.target.value) })} /></label>
             <label className="field-label"><span>连胜风险概率 0-1</span><input type="number" min={0} max={1} step={0.01} value={extreme.winStreakCrashChance} onChange={(event) => patchExtreme({ ...extreme, winStreakCrashChance: Number(event.target.value) })} /></label>
             <label className="field-label"><span>连胜风险扣分</span><input type="number" min={1} max={1999} value={extreme.crashTargetPoints} onChange={(event) => patchExtreme({ ...extreme, crashTargetPoints: Number(event.target.value) })} /></label>
+            <label className="field-label"><span>强关改名最低分</span><input type="number" min={1} max={999} value={extreme.forceRenameMinPoints || 1} onChange={(event) => patchExtreme({ ...extreme, forceRenameMinPoints: Number(event.target.value) })} /></label>
+            <label className="field-label"><span>强关保护小时</span><input type="number" min={1} max={168} value={extreme.forceRenameProtectHours || 4} onChange={(event) => patchExtreme({ ...extreme, forceRenameProtectHours: Number(event.target.value) })} /></label>
           </div>
+          <label className="field-label">
+            <span>强行关闭提示</span>
+            <textarea value={extreme.forceCloseWarning || ""} maxLength={180} onChange={(event) => patchExtreme({ ...extreme, forceCloseWarning: event.target.value })} placeholder="强行关闭极限模式后..." />
+          </label>
           <div className="admin-card">
             <div className="admin-card-title">
               <strong>正分输分比例</strong>
@@ -3209,7 +3529,37 @@ function AdminPanel({ config, lobby, onBack, onError }: { config: AppConfig; lob
     if (activeSection === "messages") {
       return (
         <div className="config-section admin-section-card">
-          <AdminSectionHeader title="系统提示" subtitle="修改密码错误、名字校验、保存提示等系统文案。" />
+          <AdminSectionHeader title="系统提示" subtitle="修改每日公告、密码错误、名字校验、保存提示等系统文案。" />
+          <div className="admin-announcement-card">
+            <div className="admin-card-title">
+              <strong>每日公告弹窗</strong>
+              <small>每天每个浏览器显示一次，建角色前也会显示</small>
+            </div>
+            <Toggle
+              label="开启每日公告"
+              value={draft.dailyAnnouncement.enabled}
+              onChange={(enabled) => patch({ dailyAnnouncement: { ...draft.dailyAnnouncement, enabled } })}
+            />
+            <div className="config-row">
+              <label className="field-label">
+                <span>公告标题</span>
+                <input value={draft.dailyAnnouncement.title} maxLength={32} onChange={(event) => patch({ dailyAnnouncement: { ...draft.dailyAnnouncement, title: event.target.value } })} placeholder="今日公告" />
+              </label>
+              <label className="field-label">
+                <span>按钮文字</span>
+                <input value={draft.dailyAnnouncement.buttonText} maxLength={16} onChange={(event) => patch({ dailyAnnouncement: { ...draft.dailyAnnouncement, buttonText: event.target.value } })} placeholder="知道了" />
+              </label>
+              <label className="field-label">
+                <span>版本标识</span>
+                <input value={draft.dailyAnnouncement.version} maxLength={32} onChange={(event) => patch({ dailyAnnouncement: { ...draft.dailyAnnouncement, version: event.target.value } })} placeholder="default" />
+              </label>
+            </div>
+            <label className="field-label">
+              <span>公告内容</span>
+              <textarea value={draft.dailyAnnouncement.content} maxLength={800} onChange={(event) => patch({ dailyAnnouncement: { ...draft.dailyAnnouncement, content: event.target.value } })} placeholder="写下今天想提醒玩家的内容" />
+            </label>
+            <p className="hint">如果希望玩家今天再次看到公告，可以修改“版本标识”，例如改成 2026-06-14-a。</p>
+          </div>
           <div className="config-row">
             {Object.entries(draft.messages).map(([key, value]) => (
               <label className="field-label" key={key}>
@@ -3238,74 +3588,105 @@ function AdminPanel({ config, lobby, onBack, onError }: { config: AppConfig; lob
             <p>最近房间快照 {formatBytes(stats.lastRoomSnapshotBytes)} · 最近大厅快照 {formatBytes(stats.lastLobbySnapshotBytes)}</p>
             <p>平均快照：房间 {formatBytes(stats.averageRoomSnapshotBytes)} · 大厅 {formatBytes(stats.averageLobbySnapshotBytes)}</p>
           </div>
-          <div className="admin-action-row">
-            <button className="danger-button" onClick={() => action("clearSuggestions")}>清空留言板</button>
-            <button className="danger-button" onClick={() => action("clearLobbyChat")}>清空大厅聊天</button>
-          </div>
-          <div className="admin-announcement-card">
-            <div className="admin-card-title">
-              <strong>发送全服公告</strong>
-              <small>当前在线玩家和后台页面会立即弹出</small>
-            </div>
-            <textarea
-              value={announcementMessage}
-              maxLength={200}
-              onChange={(event) => setAnnouncementMessage(event.target.value)}
-              placeholder="输入公告内容，最多 200 字"
-            />
-            <div className="admin-announcement-actions">
-              <label className="field-label">
-                <span>显示秒数</span>
-                <input type="number" min={3} max={60} value={announcementSeconds} onChange={(event) => setAnnouncementSeconds(event.target.value)} />
-              </label>
-              <button className="primary" onClick={sendAnnouncement}>发送公告</button>
-            </div>
-          </div>
-          <div className="admin-list-section">
-            <div className="admin-list-heading">
-              <h3>在线玩家</h3>
-              <span>{onlinePlayers.length} 人</span>
-            </div>
-            {onlinePlayers.map((player) => (
-              <AdminPlayerEditor key={player.id} player={player} onSave={(payload) => action("editPlayer", payload)} onKick={() => action("kick", { playerId: player.id })} />
+          <div className="admin-action-tabs">
+            {[
+              { id: "online", label: "在线", count: onlinePlayers.length },
+              { id: "offline", label: "离线", count: offlinePlayers.length },
+              { id: "rooms", label: "房间", count: lobby.rooms.length },
+              { id: "announcement", label: "公告", count: 0 }
+            ].map((tab) => (
+              <button
+                type="button"
+                className={activeActionTab === tab.id ? "active" : ""}
+                key={tab.id}
+                onClick={() => setActiveActionTab(tab.id as AdminActionTab)}
+              >
+                <span>{tab.label}</span>
+                {tab.count > 0 && <em>{tab.count}</em>}
+              </button>
             ))}
-            {onlinePlayers.length === 0 && <p className="empty">当前没有在线玩家</p>}
           </div>
-          <div className="admin-list-section">
-            <div className="admin-list-heading">
-              <h3>离线玩家</h3>
-              <span>{offlinePlayers.length} 人</span>
-            </div>
-            {offlinePlayers.map((player) => (
-              <AdminPlayerEditor key={player.id} player={player} onSave={(payload) => action("editPlayer", payload)} onKick={() => action("kick", { playerId: player.id })} />
-            ))}
-            {offlinePlayers.length === 0 && <p className="empty">当前没有离线保留玩家</p>}
-          </div>
-          <div className="admin-list-section">
-            <h3>房间管理</h3>
-            {lobby.rooms.map((room) => (
-              <div className="admin-room" key={room.id}>
-                <div className="admin-card-title">
-                  <strong>{room.name}</strong>
-                  <small>{room.code} · {room.status} · {room.players}/2 战斗席 · {room.spectators} 观战</small>
-                </div>
-                <div className="admin-action-row">
-                  <button className="danger-button" onClick={() => action("closeRoom", { roomId: room.id })}>关闭房间</button>
-                  <button onClick={() => action("clearRoomChat", { roomId: room.id })}>清空房间聊天</button>
-                  <button onClick={() => action("forceNext", { roomId: room.id })}>强制下一局</button>
-                </div>
-                {room.gameId === "othello" && (
-                  <div className="admin-action-row othello-admin-actions">
-                    <button onClick={() => action("forceOthelloRestart", { roomId: room.id })}>黑白棋重开</button>
-                    <button onClick={() => action("forceOthelloEnd", { roomId: room.id, othelloResult: "A" })}>判黑方胜</button>
-                    <button onClick={() => action("forceOthelloEnd", { roomId: room.id, othelloResult: "B" })}>判白方胜</button>
-                    <button onClick={() => action("forceOthelloEnd", { roomId: room.id, othelloResult: "draw" })}>判平局</button>
-                  </div>
-                )}
+          {activeActionTab === "announcement" && (
+            <>
+              <div className="admin-action-row">
+                <button className="danger-button" onClick={() => action("clearSuggestions")}>清空留言板</button>
+                <button className="danger-button" onClick={() => action("clearLobbyChat")}>清空大厅聊天</button>
               </div>
-            ))}
-            {lobby.rooms.length === 0 && <p className="empty">暂无房间</p>}
-          </div>
+              <div className="admin-announcement-card">
+                <div className="admin-card-title">
+                  <strong>发送全服公告</strong>
+                  <small>当前在线玩家和后台页面会立即弹出</small>
+                </div>
+                <textarea
+                  value={announcementMessage}
+                  maxLength={200}
+                  onChange={(event) => setAnnouncementMessage(event.target.value)}
+                  placeholder="输入公告内容，最多 200 字"
+                />
+                <div className="admin-announcement-actions">
+                  <label className="field-label">
+                    <span>显示秒数</span>
+                    <input type="number" min={3} max={60} value={announcementSeconds} onChange={(event) => setAnnouncementSeconds(event.target.value)} />
+                  </label>
+                  <button className="primary" onClick={sendAnnouncement}>发送公告</button>
+                </div>
+              </div>
+            </>
+          )}
+          {activeActionTab === "online" && (
+            <div className="admin-list-section">
+              <div className="admin-list-heading">
+                <h3>在线玩家</h3>
+                <span>{onlinePlayers.length} 人</span>
+              </div>
+              {onlinePlayers.map((player) => (
+                <AdminPlayerEditor key={player.id} player={player} onSave={(payload) => action("editPlayer", payload)} onKick={() => action("kick", { playerId: player.id })} />
+              ))}
+              {onlinePlayers.length === 0 && <p className="empty">当前没有在线玩家</p>}
+            </div>
+          )}
+          {activeActionTab === "offline" && (
+            <div className="admin-list-section">
+              <div className="admin-list-heading">
+                <h3>离线玩家</h3>
+                <span>{offlinePlayers.length} 人</span>
+              </div>
+              {offlinePlayers.map((player) => (
+                <AdminPlayerEditor key={player.id} player={player} onSave={(payload) => action("editPlayer", payload)} onKick={() => action("kick", { playerId: player.id })} />
+              ))}
+              {offlinePlayers.length === 0 && <p className="empty">当前没有离线保留玩家</p>}
+            </div>
+          )}
+          {activeActionTab === "rooms" && (
+            <div className="admin-list-section">
+              <div className="admin-list-heading">
+                <h3>房间管理</h3>
+                <span>{lobby.rooms.length} 间</span>
+              </div>
+              {lobby.rooms.map((room) => (
+                <div className="admin-room" key={room.id}>
+                  <div className="admin-card-title">
+                    <strong>{room.name}</strong>
+                    <small>{room.code} · {room.status} · {room.players}/2 战斗席 · {room.spectators} 观战</small>
+                  </div>
+                  <div className="admin-action-row">
+                    <button className="danger-button" onClick={() => action("closeRoom", { roomId: room.id })}>关闭房间</button>
+                    <button onClick={() => action("clearRoomChat", { roomId: room.id })}>清空房间聊天</button>
+                    <button onClick={() => action("forceNext", { roomId: room.id })}>强制下一局</button>
+                  </div>
+                  {room.gameId === "othello" && (
+                    <div className="admin-action-row othello-admin-actions">
+                      <button onClick={() => action("forceOthelloRestart", { roomId: room.id })}>黑白棋重开</button>
+                      <button onClick={() => action("forceOthelloEnd", { roomId: room.id, othelloResult: "A" })}>判黑方胜</button>
+                      <button onClick={() => action("forceOthelloEnd", { roomId: room.id, othelloResult: "B" })}>判白方胜</button>
+                      <button onClick={() => action("forceOthelloEnd", { roomId: room.id, othelloResult: "draw" })}>判平局</button>
+                    </div>
+                  )}
+                </div>
+              ))}
+              {lobby.rooms.length === 0 && <p className="empty">暂无房间</p>}
+            </div>
+          )}
         </div>
       );
     }

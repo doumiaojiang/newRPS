@@ -4,6 +4,13 @@
     "description": "粉蓝白风格的实时联机小游戏大厅，先从锤子剪刀布开始。",
     "adminPassword": ""
   },
+  "dailyAnnouncement": {
+    "enabled": true,
+    "title": "今日公告",
+    "content": "欢迎来到抖喵游戏屋。游玩时请尊重其他玩家，遇到卡房或异常可以联系管理员处理。",
+    "buttonText": "知道了",
+    "version": "default"
+  },
   "genders": [
     { "id": "boy", "label": "男生", "factionId": "male_faction" },
     { "id": "male", "label": "男性", "factionId": "male_faction" },
@@ -86,7 +93,10 @@
   "nameWar": {
     "penaltyPrefix": "失名者",
     "loserPanelTitle": "名字争夺战失格者",
-    "escapeTitle": "逃跑的人"
+    "escapeTitle": "逃跑的人",
+    "renamePanelTitle": "通用改名处",
+    "nameWarLoserLabel": "名争失格",
+    "extremeForceClosedLabel": "极限强关"
   },
   "giveaway": {
     "panelTitle": "白给自救板",
@@ -103,7 +113,10 @@
     "hourlyDecay": { "pos4": 10, "pos3": 6, "pos2": 4, "pos1": 2, "default": 2 },
     "winStreakThreshold": 10,
     "winStreakCrashChance": 0.5,
-    "crashTargetPoints": 333
+    "crashTargetPoints": 333,
+    "forceCloseWarning": "强行关闭极限模式后，你会永久进入通用改名处，可被符合条件的极限玩家改名。",
+    "forceRenameMinPoints": 1,
+    "forceRenameProtectHours": 4
   },
   "bots": {
     "names": ["Bot 小蓝", "Bot 小粉", "随机拳机", "布布机器人"],

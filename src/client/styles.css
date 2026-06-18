@@ -376,6 +376,18 @@ main {
   border-color: color-mix(in srgb, var(--border-strong) 70%, var(--pink-border));
 }
 
+.danger-soft {
+  color: #a9344f;
+  background: color-mix(in srgb, var(--button-bg) 72%, #ff8faf);
+  border-color: color-mix(in srgb, var(--border-strong) 58%, #ff8faf);
+}
+
+:root[data-theme="dark"] .danger-soft {
+  color: #ffc2d0;
+  background: color-mix(in srgb, var(--panel-solid) 72%, #7c2840);
+  border-color: #b65b73;
+}
+
 .notice,
 .loading {
   max-width: 1280px;
@@ -422,6 +434,54 @@ main {
 .announcement-popup .icon-button {
   flex: 0 0 auto;
   background: color-mix(in srgb, var(--panel-solid) 70%, transparent);
+}
+
+.daily-announcement-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(31, 43, 59, 0.22);
+  backdrop-filter: blur(7px);
+}
+
+.daily-announcement-card {
+  width: min(520px, 100%);
+  display: grid;
+  gap: 14px;
+  border: 1px solid color-mix(in srgb, var(--primary) 42%, var(--border));
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--pink) 20%, var(--panel-solid)), color-mix(in srgb, var(--primary) 16%, var(--panel-solid)));
+  box-shadow: 0 24px 80px var(--shadow);
+  color: var(--page-text);
+  padding: 18px;
+}
+
+.daily-announcement-kicker {
+  display: inline-flex;
+  width: fit-content;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-solid);
+  color: var(--muted);
+  padding: 4px 9px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.daily-announcement-card h2 {
+  margin: 10px 0 8px;
+  font-size: 24px;
+}
+
+.daily-announcement-card p {
+  margin: 0;
+  color: var(--muted);
+  white-space: pre-wrap;
+  line-height: 1.7;
 }
 
 .login-card,
@@ -817,6 +877,54 @@ main {
   line-height: 1.45;
 }
 
+.othello-theme-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.othello-theme-card {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  text-align: left;
+  padding: 10px;
+  border-color: var(--border);
+  background: linear-gradient(180deg, var(--panel-solid), var(--panel-soft));
+}
+
+.othello-theme-card.active {
+  border-color: var(--blue-border);
+  box-shadow: 0 0 0 3px rgba(116, 199, 255, 0.24);
+}
+
+.othello-theme-preview {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  width: 54px;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border: 2px solid var(--theme-border, #2f7a5c);
+  border-radius: 8px;
+  background: var(--theme-board, #2f8a64);
+}
+
+.othello-theme-preview i {
+  display: block;
+  border: 1px solid var(--theme-line, rgba(18, 72, 52, 0.55));
+  background: var(--theme-cell, #38a474);
+}
+
+.othello-theme-card strong {
+  font-size: 13px;
+}
+
+.othello-theme-card small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -1015,6 +1123,8 @@ main {
 
 .room-info-tag-admin-card {
   align-items: stretch;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .join-box {
@@ -1670,6 +1780,86 @@ main {
   animation-delay: 0.28s;
 }
 
+.othello-risk-actions {
+  width: min(100%, 680px);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.othello-surrender-card {
+  width: min(100%, 680px);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, #f59e0b 34%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, #f59e0b 10%, var(--panel-solid));
+  padding: 10px;
+}
+
+.othello-surrender-card.needs-action {
+  border-color: color-mix(in srgb, #ff6f91 42%, var(--border));
+  background: color-mix(in srgb, #ff6f91 10%, var(--panel-solid));
+}
+
+.othello-surrender-card strong,
+.othello-surrender-card p {
+  margin: 0;
+}
+
+.othello-surrender-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.othello-settlement-card {
+  width: min(100%, 680px);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, var(--primary) 40%, var(--border));
+  border-radius: 8px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--primary) 14%, var(--panel-solid)), color-mix(in srgb, var(--pink) 18%, var(--panel-solid)));
+  padding: 10px;
+}
+
+.othello-settlement-card.forced {
+  border-color: color-mix(in srgb, #ff8a4c 50%, var(--border));
+  background: linear-gradient(135deg, color-mix(in srgb, #ffcf7a 18%, var(--panel-solid)), color-mix(in srgb, #ff6f91 12%, var(--panel-solid)));
+}
+
+.othello-settlement-card strong,
+.othello-settlement-card p {
+  margin: 0;
+}
+
+.othello-settlement-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.othello-settlement-forced {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-solid);
+  color: var(--page-text);
+  font-size: 12px;
+  font-weight: 900;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
 @keyframes othello-draw-bounce {
   from {
     transform: translateY(0) scale(0.92);
@@ -1699,10 +1889,10 @@ main {
   aspect-ratio: 1;
   display: grid;
   grid-template-columns: repeat(8, 1fr);
-  border: 3px solid color-mix(in srgb, #2f7a5c 75%, var(--border));
+  border: 3px solid color-mix(in srgb, var(--othello-border, #2f7a5c) 75%, var(--border));
   border-radius: 8px;
   overflow: hidden;
-  background: #2f8a64;
+  background: var(--othello-board, #2f8a64);
   box-shadow: inset 0 0 0 1px rgba(255,255,255,0.16), 0 18px 36px rgba(44, 89, 78, 0.18);
 }
 
@@ -1710,20 +1900,22 @@ main {
   position: relative;
   min-width: 0;
   min-height: 0;
-  border: 1px solid rgba(18, 72, 52, 0.55);
+  border: 1px solid var(--othello-line, rgba(18, 72, 52, 0.55));
   border-radius: 0;
-  background: #38a474;
+  background: var(--othello-cell, #38a474);
   display: grid;
   place-items: center;
   padding: 0;
 }
 
 .othello-cell:not(:disabled):hover {
-  background: #45b883;
+  background: var(--othello-hover, #45b883);
 }
 
 .othello-disc {
+  display: block;
   width: 72%;
+  min-width: 14px;
   aspect-ratio: 1;
   border-radius: 999px;
   box-shadow: inset 0 8px 12px rgba(255,255,255,0.18), inset 0 -8px 14px rgba(0,0,0,0.18), 0 4px 8px rgba(0,0,0,0.2);
@@ -1738,7 +1930,9 @@ main {
 }
 
 .othello-legal-dot {
+  display: block;
   width: 28%;
+  min-width: 7px;
   aspect-ratio: 1;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.46);
@@ -2117,6 +2311,32 @@ main {
   display: grid;
   align-content: start;
   gap: 10px;
+}
+
+.chat-scroll-shell {
+  position: relative;
+  min-height: 0;
+}
+
+.chat-stick-button {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  z-index: 4;
+  min-height: 30px;
+  border: 1px solid color-mix(in srgb, var(--primary) 46%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-solid) 88%, var(--primary));
+  color: var(--page-text);
+  box-shadow: 0 10px 22px color-mix(in srgb, var(--shadow) 88%, transparent);
+  font-size: 12px;
+  font-weight: 900;
+  padding: 5px 12px;
+}
+
+.chat-stick-button:hover {
+  transform: translateX(-50%) translateY(-1px);
 }
 
 .lobby-message-board {
@@ -3080,6 +3300,41 @@ main {
   gap: 8px;
 }
 
+.admin-action-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.admin-action-tabs button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  border-color: var(--border);
+  background: var(--panel-solid);
+  font-weight: 900;
+}
+
+.admin-action-tabs button.active {
+  border-color: var(--blue-border);
+  background: color-mix(in srgb, var(--primary) 14%, var(--panel-solid));
+  box-shadow: 0 0 0 3px rgba(116, 199, 255, 0.18);
+}
+
+.admin-action-tabs em {
+  min-width: 22px;
+  border-radius: 999px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1;
+  padding: 5px 7px;
+  text-align: center;
+}
+
 .admin-announcement-card {
   display: grid;
   gap: 10px;
@@ -3292,21 +3547,31 @@ main {
 
 .color-input {
   display: grid;
-  grid-template-columns: 88px 42px 1fr;
+  grid-template-columns: minmax(58px, 76px) 42px minmax(0, 1fr);
   align-items: center;
   gap: 6px;
+  min-width: 0;
 }
 
 .color-input span,
 .variant-grid span {
   color: var(--muted);
   font-size: 13px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .color-input input[type="color"] {
   width: 42px;
   min-height: 38px;
   padding: 3px;
+}
+
+.color-input input:not([type="color"]) {
+  width: 100%;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
 }
 
 .variant-grid label {
@@ -3513,9 +3778,33 @@ main {
     grid-template-columns: 1fr;
   }
 
+  .othello-theme-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .othello-head {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .othello-surrender-card {
+    grid-template-columns: 1fr;
+  }
+
+  .othello-settlement-card {
+    grid-template-columns: 1fr;
+  }
+
+  .othello-risk-actions,
+  .othello-surrender-actions,
+  .othello-settlement-actions {
+    justify-content: stretch;
+  }
+
+  .othello-risk-actions > button,
+  .othello-surrender-actions > button,
+  .othello-settlement-actions > button {
+    flex: 1 1 140px;
   }
 
   .othello-board {
@@ -3525,6 +3814,10 @@ main {
 
   .admin-announcement-actions {
     grid-template-columns: 1fr;
+  }
+
+  .admin-action-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .admin-sidebar {

@@ -77,7 +77,14 @@ const defaultGames: AppConfig["games"] = [
   { id: "rps", name: "锤子剪刀布", description: "双方同时选择石头、剪刀、布，服务器公开结算。" },
   { id: "othello", name: "黑白棋", description: "8x8 棋盘轮流落子，服务器判断翻棋和胜负。" }
 ];
-const defaultNameWar = { penaltyPrefix: "失名者", loserPanelTitle: "名字争夺战失格者", escapeTitle: "逃跑的人" };
+const defaultNameWar = {
+  penaltyPrefix: "失名者",
+  loserPanelTitle: "名字争夺战失格者",
+  escapeTitle: "逃跑的人",
+  renamePanelTitle: "通用改名处",
+  nameWarLoserLabel: "名争失格",
+  extremeForceClosedLabel: "极限强关"
+};
 const defaultGiveaway = {
   panelTitle: "白给自救板",
   panelDescription: "提交一点自我惩罚宣言，等待其他玩家点赞帮你降低白给值。",
@@ -93,10 +100,23 @@ const defaultExtremeMode: AppConfig["extremeMode"] = {
   hourlyDecay: { pos4: 10, pos3: 6, pos2: 4, pos1: 2, default: 2 },
   winStreakThreshold: 10,
   winStreakCrashChance: 0.5,
-  crashTargetPoints: 333
+  crashTargetPoints: 333,
+  forceCloseWarning: "强行关闭极限模式后，你会永久进入通用改名处，可被符合条件的极限玩家改名。",
+  forceRenameMinPoints: 1,
+  forceRenameProtectHours: 4
+};
+
+const defaultDailyAnnouncement: AppConfig["dailyAnnouncement"] = {
+  enabled: true,
+  title: "今日公告",
+  content: "欢迎来到抖喵游戏屋。游玩时请尊重其他玩家，遇到卡房或异常可以联系管理员处理。",
+  buttonText: "知道了",
+  version: "default"
 };
 const defaultAccessControl = { maxOnlinePerIp: 3, maxCreatesPer10Min: 5 };
 const defaultRoomInfoTags: Record<string, RoomInfoTagStyle> = {
+  gameRps: { label: "锤子剪刀布", textColor: "#4d5c6f", backgroundColor: "#eef3f8", borderColor: "#c9d6e4" },
+  gameOthello: { label: "黑白棋", textColor: "#163c32", backgroundColor: "#dff7ec", borderColor: "#93d8b8" },
   phaseReady: { label: "等待坐满", textColor: "#225c8d", backgroundColor: "#e5f5ff", borderColor: "#9ed7ff" },
   phaseChoosing: { label: "出拳中", textColor: "#6b4b00", backgroundColor: "#fff3c4", borderColor: "#ffd875" },
   phaseResult: { label: "结算中", textColor: "#6b3f8d", backgroundColor: "#f1e7ff", borderColor: "#c9a9ff" },
@@ -160,6 +180,13 @@ function normalizeConfig(input: AppConfig): AppConfig {
       description: String(input.site?.description || ""),
       adminPassword: String(process.env.ADMIN_PASSWORD || input.site?.adminPassword || "").trim()
     },
+    dailyAnnouncement: {
+      enabled: input.dailyAnnouncement?.enabled !== false,
+      title: String(input.dailyAnnouncement?.title || defaultDailyAnnouncement.title).trim().slice(0, 32) || defaultDailyAnnouncement.title,
+      content: String(input.dailyAnnouncement?.content || defaultDailyAnnouncement.content).trim().slice(0, 800) || defaultDailyAnnouncement.content,
+      buttonText: String(input.dailyAnnouncement?.buttonText || defaultDailyAnnouncement.buttonText).trim().slice(0, 16) || defaultDailyAnnouncement.buttonText,
+      version: String(input.dailyAnnouncement?.version || defaultDailyAnnouncement.version).trim().slice(0, 32) || defaultDailyAnnouncement.version
+    },
     genderFactions,
     genders,
     titles,
@@ -178,7 +205,10 @@ function normalizeConfig(input: AppConfig): AppConfig {
     nameWar: {
       penaltyPrefix: String(input.nameWar?.penaltyPrefix || defaultNameWar.penaltyPrefix).trim().slice(0, 16) || defaultNameWar.penaltyPrefix,
       loserPanelTitle: String(input.nameWar?.loserPanelTitle || defaultNameWar.loserPanelTitle).trim().slice(0, 24) || defaultNameWar.loserPanelTitle,
-      escapeTitle: String(input.nameWar?.escapeTitle || defaultNameWar.escapeTitle).trim().slice(0, 18) || defaultNameWar.escapeTitle
+      escapeTitle: String(input.nameWar?.escapeTitle || defaultNameWar.escapeTitle).trim().slice(0, 18) || defaultNameWar.escapeTitle,
+      renamePanelTitle: String(input.nameWar?.renamePanelTitle || input.nameWar?.loserPanelTitle || defaultNameWar.renamePanelTitle).trim().slice(0, 24) || defaultNameWar.renamePanelTitle,
+      nameWarLoserLabel: String(input.nameWar?.nameWarLoserLabel || defaultNameWar.nameWarLoserLabel).trim().slice(0, 16) || defaultNameWar.nameWarLoserLabel,
+      extremeForceClosedLabel: String(input.nameWar?.extremeForceClosedLabel || defaultNameWar.extremeForceClosedLabel).trim().slice(0, 16) || defaultNameWar.extremeForceClosedLabel
     },
     giveaway: {
       panelTitle: String(input.giveaway?.panelTitle || defaultGiveaway.panelTitle).trim().slice(0, 24) || defaultGiveaway.panelTitle,
@@ -274,7 +304,10 @@ function normalizeExtremeMode(input?: Partial<AppConfig["extremeMode"]>): AppCon
     hourlyDecay: normalizeNumberRecord(input?.hourlyDecay, defaultExtremeMode.hourlyDecay, 0, 999),
     winStreakThreshold: clampNumber(input?.winStreakThreshold, 1, 100, defaultExtremeMode.winStreakThreshold),
     winStreakCrashChance: clampRatio(input?.winStreakCrashChance, defaultExtremeMode.winStreakCrashChance),
-    crashTargetPoints: clampNumber(input?.crashTargetPoints, 1, 1999, defaultExtremeMode.crashTargetPoints)
+    crashTargetPoints: clampNumber(input?.crashTargetPoints, 1, 1999, defaultExtremeMode.crashTargetPoints),
+    forceCloseWarning: String(input?.forceCloseWarning || defaultExtremeMode.forceCloseWarning).trim().slice(0, 180) || defaultExtremeMode.forceCloseWarning,
+    forceRenameMinPoints: clampNumber(input?.forceRenameMinPoints, 1, 999, defaultExtremeMode.forceRenameMinPoints || 1),
+    forceRenameProtectHours: clampNumber(input?.forceRenameProtectHours, 1, 168, defaultExtremeMode.forceRenameProtectHours || 4)
   };
 }
 
@@ -339,6 +372,11 @@ function assertHexColor(value: string, label: string) {
 export function validateConfig(input: AppConfig) {
   input = normalizeConfig(input);
   if (!input.site?.name) throw new Error("网站名称不能为空");
+  if (input.dailyAnnouncement?.enabled) {
+    if (!input.dailyAnnouncement.title?.trim()) throw new Error("每日公告标题不能为空");
+    if (!input.dailyAnnouncement.content?.trim()) throw new Error("每日公告内容不能为空");
+    if (!input.dailyAnnouncement.buttonText?.trim()) throw new Error("每日公告按钮文字不能为空");
+  }
   if (!Array.isArray(input.genders) || input.genders.length === 0) throw new Error("至少需要一个性别选项");
   if (!Array.isArray(input.genderFactions) || input.genderFactions.length === 0) throw new Error("至少需要一个性别阵营");
   assertUnique(input.genderFactions.map((faction) => faction.id), "阵营 ID");
@@ -392,6 +430,9 @@ export function validateConfig(input: AppConfig) {
   if (!input.nameWar?.penaltyPrefix?.trim()) throw new Error("名字争夺战前缀不能为空");
   if (!input.nameWar?.loserPanelTitle?.trim()) throw new Error("名字争夺战失格者标题不能为空");
   if (!input.nameWar?.escapeTitle?.trim()) throw new Error("名字争夺战逃跑称号不能为空");
+  if (!input.nameWar?.renamePanelTitle?.trim()) throw new Error("通用改名处标题不能为空");
+  if (!input.nameWar?.nameWarLoserLabel?.trim()) throw new Error("名争失格标签不能为空");
+  if (!input.nameWar?.extremeForceClosedLabel?.trim()) throw new Error("极限强关标签不能为空");
   if (!input.giveaway?.panelTitle?.trim()) throw new Error("白给模式面板标题不能为空");
   if (!input.giveaway?.panelDescription?.trim()) throw new Error("白给模式说明不能为空");
   if (!input.giveaway?.submitPlaceholder?.trim()) throw new Error("白给模式输入提示不能为空");
@@ -411,6 +452,11 @@ export function validateConfig(input: AppConfig) {
   if (!Number.isFinite(input.extremeMode.winStreakThreshold) || input.extremeMode.winStreakThreshold < 1) throw new Error("极限模式连胜阈值至少为 1");
   if (!Number.isFinite(input.extremeMode.winStreakCrashChance) || input.extremeMode.winStreakCrashChance < 0 || input.extremeMode.winStreakCrashChance > 1) throw new Error("极限模式连胜风险概率必须在 0 到 1 之间");
   if (!Number.isFinite(input.extremeMode.crashTargetPoints) || input.extremeMode.crashTargetPoints < 1) throw new Error("极限模式连胜风险扣分至少为 1");
+  const forceRenameMinPoints = input.extremeMode.forceRenameMinPoints ?? defaultExtremeMode.forceRenameMinPoints ?? 1;
+  const forceRenameProtectHours = input.extremeMode.forceRenameProtectHours ?? defaultExtremeMode.forceRenameProtectHours ?? 4;
+  if (!input.extremeMode.forceCloseWarning?.trim()) throw new Error("极限模式强行关闭提示不能为空");
+  if (!Number.isFinite(forceRenameMinPoints) || forceRenameMinPoints < 1) throw new Error("极限强关改名最低分至少为 1");
+  if (!Number.isFinite(forceRenameProtectHours) || forceRenameProtectHours < 1) throw new Error("极限强关改名保护小时至少为 1");
   if (!Number.isFinite(input.accessControl?.maxOnlinePerIp) || input.accessControl.maxOnlinePerIp < 1) throw new Error("同 IP 在线人数限制至少为 1");
   if (!Number.isFinite(input.accessControl?.maxCreatesPer10Min) || input.accessControl.maxCreatesPer10Min < 1) throw new Error("同 IP 10 分钟新建玩家限制至少为 1");
   if (!input.bots?.names?.length || !input.bots?.difficulties?.length) throw new Error("bot 名字和难度不能为空");

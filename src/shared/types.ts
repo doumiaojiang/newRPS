@@ -25,6 +25,23 @@ export type OthelloState = {
   blackCount: number;
   whiteCount: number;
   rankedDelta?: Record<SeatKey, number>;
+  settlementEvents?: string[];
+  pendingSettlement?: {
+    id: string;
+    seat: SeatKey;
+    opponentSeat: SeatKey;
+    flips: number;
+    stake: number;
+    nextTurn: SeatKey;
+    expiresAt: number;
+    forced?: "giveaway" | "tribute";
+    resolvedAs?: "normal" | "giveaway" | "tribute";
+  };
+  surrenderRequest?: {
+    fromSeat: SeatKey;
+    toSeat: SeatKey;
+    createdAt: number;
+  };
   ended?: boolean;
   winner?: RoundResult;
 };
@@ -113,6 +130,11 @@ export type PublicPlayer = {
   extremeModeCooldownUntil?: number;
   extremeWinStreak?: number;
   extremeLastDecayHour?: number;
+  extremeForceClosed?: boolean;
+  extremeForceClosedAt?: number;
+  extremeRenameProtectedUntil?: number;
+  extremeRenamedBy?: string;
+  extremeRenamedByName?: string;
   roomId?: string;
   isAdmin?: boolean;
   stats: PublicStats;
@@ -172,6 +194,7 @@ export type RoomSettings = {
   enableRankMultiplier?: boolean;
   rankMultiplier?: RankMultiplier;
   enableExtremeRanked?: boolean;
+  othelloBoardTheme?: "classic" | "pastel" | "midnight" | "wood" | "neon";
 };
 
 export type PunishmentProof = {
@@ -326,6 +349,13 @@ export type AppConfig = {
     description: string;
     adminPassword: string;
   };
+  dailyAnnouncement: {
+    enabled: boolean;
+    title: string;
+    content: string;
+    buttonText: string;
+    version: string;
+  };
   genders: GenderOption[];
   genderFactions: GenderFaction[];
   titles: Array<{
@@ -357,6 +387,9 @@ export type AppConfig = {
     penaltyPrefix: string;
     loserPanelTitle: string;
     escapeTitle: string;
+    renamePanelTitle?: string;
+    nameWarLoserLabel?: string;
+    extremeForceClosedLabel?: string;
   };
   giveaway: {
     panelTitle: string;
@@ -374,6 +407,9 @@ export type AppConfig = {
     winStreakThreshold: number;
     winStreakCrashChance: number;
     crashTargetPoints: number;
+    forceCloseWarning?: string;
+    forceRenameMinPoints?: number;
+    forceRenameProtectHours?: number;
   };
   bots: {
     names: string[];
