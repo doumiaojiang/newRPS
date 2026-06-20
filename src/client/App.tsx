@@ -202,6 +202,29 @@ function appendHistoryPage(oldItems: RoomSnapshot["roundHistory"], newItems: Roo
   })];
 }
 
+function playerWinRate(player: PublicPlayer) {
+  const decisive = player.stats.wins + player.stats.losses;
+  return decisive === 0 ? 0 : player.stats.wins / decisive;
+}
+
+function replacePlayerInRoom(room: RoomSnapshot, player: PublicPlayer) {
+  let changed = false;
+  const seats = { ...room.seats };
+  for (const seat of ["A", "B"] as SeatKey[]) {
+    const occupant = seats[seat];
+    if (occupant?.id === player.id && !("isBot" in occupant)) {
+      seats[seat] = player;
+      changed = true;
+    }
+  }
+  const spectators = room.spectators.map((spectator) => {
+    if (spectator.id !== player.id) return spectator;
+    changed = true;
+    return player;
+  });
+  return changed ? { ...room, seats, spectators } : room;
+}
+
 export function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [lobby, setLobby] = useState<LobbySnapshot | null>(null);
@@ -263,6 +286,32 @@ export function App() {
       });
       if (!isAdminRoute()) setView("room");
     });
+    socket.on("player:update", (player: PublicPlayer) => {
+      setLobby((old) => {
+        if (!old) return old;
+        const players = old.players.map((item) => item.id === player.id ? player : item);
+        return {
+          ...old,
+          players,
+          normalLeaderboard: players
+            .filter((item) => item.stats.wins + item.stats.losses + item.stats.draws >= 5)
+            .sort((a, b) => playerWinRate(b) - playerWinRate(a) || b.stats.wins - a.stats.wins)
+            .slice(0, 10),
+          rankedLeaderboard: players
+            .filter((item) => item.connected)
+            .sort((a, b) => b.stats.rankedPoints - a.stats.rankedPoints || b.stats.wins - a.stats.wins),
+          rooms: old.rooms.map((roomInfo) => ({
+          ...roomInfo,
+          versus: {
+            A: roomInfo.versus.A && !("isBot" in roomInfo.versus.A) && roomInfo.versus.A.player.id === player.id ? { player } : roomInfo.versus.A,
+            B: roomInfo.versus.B && !("isBot" in roomInfo.versus.B) && roomInfo.versus.B.player.id === player.id ? { player } : roomInfo.versus.B
+          }
+          }))
+        };
+      });
+      setRoom((old) => old ? replacePlayerInRoom(old, player) : old);
+      setMe((old) => old?.player.id === player.id ? { ...old, player, room: old.room ? replacePlayerInRoom(old.room, player) : old.room } : old);
+    });
     socket.on("player:kicked", () => {
       localStorage.removeItem(tokenKey);
       setMe(null);
@@ -312,6 +361,7 @@ export function App() {
     return () => {
       socket.off("lobby:update");
       socket.off("room:update");
+      socket.off("player:update");
       socket.off("player:kicked");
       socket.off("room:closed");
       socket.off("config:update");
@@ -1782,6 +1832,8 @@ function OthelloSettlementCard({ room, me, pending, now, onSettle }: { room: Roo
   const opponentName = occupantDisplay(room.seats[pending.opponentSeat]);
   const secondsLeft = Math.max(0, Math.ceil((pending.expiresAt - now) / 1000));
   const forcedText = pending.forced === "tribute" ? "强制上贡" : pending.forced === "giveaway" ? "强制白给" : "";
+  const giveawayGain = formatGiveawayValue(pending.flips * 0.1);
+  const tributeGain = formatGiveawayValue(pending.flips * 0.2);
   return (
     <div className={`othello-settlement-card ${pending.forced ? "forced" : ""}`}>
       <div>
@@ -1789,6 +1841,9 @@ function OthelloSettlementCard({ room, me, pending, now, onSettle }: { room: Roo
         <p className="hint">
           {actorName} 本手翻 {pending.flips} 子，基础分 {pending.stake}。
           {pending.forced ? ` ${forcedText}将在 ${secondsLeft} 秒后自动结算。` : isMine ? ` ${secondsLeft} 秒后自动选择不白给。` : ` 等待 ${actorName} 选择，${secondsLeft} 秒后默认不白给。`}
+        </p>
+        <p className="othello-settlement-help">
+          不白给：本手按 {pending.stake} 分正常结算；白给：本手不结算排位分，白给值 +{giveawayGain}%；上贡：对方拿本手收益，你的白给值 +{tributeGain}%。
         </p>
       </div>
       {pending.forced ? (
@@ -1798,8 +1853,8 @@ function OthelloSettlementCard({ room, me, pending, now, onSettle }: { room: Roo
       ) : isMine ? (
         <div className="othello-settlement-actions">
           <button className="primary" onClick={() => onSettle("normal")}>不白给</button>
-          <button className="soft-button" onClick={() => onSettle("giveaway")}>白给 +{formatGiveawayValue(pending.flips * 0.1)}%</button>
-          <button className="soft-button danger-soft" onClick={() => onSettle("tribute")}>上贡给 {opponentName} +{formatGiveawayValue(pending.flips * 0.2)}%</button>
+          <button className="soft-button" onClick={() => onSettle("giveaway")}>白给 +{giveawayGain}%</button>
+          <button className="soft-button danger-soft" onClick={() => onSettle("tribute")}>上贡给 {opponentName} +{tributeGain}%</button>
         </div>
       ) : (
         <div className="othello-settlement-forced">

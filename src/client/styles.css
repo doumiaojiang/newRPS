@@ -1841,6 +1841,13 @@ main {
   margin: 0;
 }
 
+.othello-settlement-help {
+  margin-top: 6px !important;
+  color: var(--page-text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .othello-settlement-actions {
   display: flex;
   align-items: center;

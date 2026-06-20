@@ -644,6 +644,7 @@ function refreshGiveawayBoard(player: PlayerState, now = Date.now()) {
 function addGiveawayValue(player: PlayerState, delta: number) {
   player.giveawayValue = clampGiveawayValue((player.giveawayValue || 0) + delta);
   refreshPlayerSnapshots(player);
+  broadcastPlayerUpdate(player);
 }
 
 function refreshNameWarState(player: PlayerState, now = Date.now()) {
@@ -724,6 +725,10 @@ function publicPlayer(player: PlayerState): PublicPlayer {
     ...rest
   } = player;
   return rest;
+}
+
+function broadcastPlayerUpdate(player: PlayerState) {
+  io.emit("player:update", publicPlayer(player));
 }
 
 function refreshPlayerSnapshots(player: PlayerState) {
@@ -1463,6 +1468,7 @@ function updateRankedPoints(player: PlayerState, delta: number) {
   player.stats.rankedPoints = clamp(player.stats.rankedPoints + delta, minPoints, 999);
   refreshNameWarState(player);
   refreshPlayerSnapshots(player);
+  broadcastPlayerUpdate(player);
   if (player.persistent) requestPersist("important");
 }
 
@@ -2958,6 +2964,7 @@ io.on("connection", (socket) => {
     if (nameChanged) player.profileUpdatedAt = now;
     player.displayName = formatDisplayName(player);
     refreshPlayerSnapshots(player);
+    broadcastPlayerUpdate(player);
     if (player.persistent) requestPersist("lazy");
     reply?.({ player: publicPlayer(player) });
     broadcastLobby();
@@ -2974,6 +2981,7 @@ io.on("connection", (socket) => {
     if (room.phase === "punishment") return reply?.({ error: "惩罚阶段不能增加白给值" });
     addGiveawayValue(player, 2);
     player.giveawayClicks = (player.giveawayClicks || 0) + 1;
+    broadcastPlayerUpdate(player);
     reply?.({ player: publicPlayer(player) });
     broadcastLobby();
     broadcastRoom(room.id);
@@ -2993,6 +3001,8 @@ io.on("connection", (socket) => {
     player.giveawayBoardDislikes = 0;
     player.giveawayBoardLikeWindowStartedAt = now;
     player.giveawayBoardLikesThisHour = 0;
+    refreshPlayerSnapshots(player);
+    broadcastPlayerUpdate(player);
     reply?.({ player: publicPlayer(player) });
     broadcastLobby();
   });
@@ -3031,6 +3041,9 @@ io.on("connection", (socket) => {
       addGiveawayValue(target, 0.1);
     }
     actor.giveawayVoteCount = (actor.giveawayVoteCount || 0) + 1;
+    broadcastPlayerUpdate(actor);
+    refreshPlayerSnapshots(target);
+    broadcastPlayerUpdate(target);
     reply?.({ ok: true });
     broadcastLobby();
     if (target.roomId) broadcastRoom(target.roomId);
@@ -3046,6 +3059,7 @@ io.on("connection", (socket) => {
     updateRankedPoints(player, -200);
     player.rankMultiplierUnlocked = true;
     refreshPlayerSnapshots(player);
+    broadcastPlayerUpdate(player);
     reply?.({ player: publicPlayer(player) });
     broadcastLobby();
     if (player.roomId) broadcastRoom(player.roomId);
@@ -3064,6 +3078,7 @@ io.on("connection", (socket) => {
     player.extremeForceClosedAt = now;
     player.displayName = formatDisplayName(player);
     refreshPlayerSnapshots(player);
+    broadcastPlayerUpdate(player);
     reply?.({ player: publicPlayer(player) });
     broadcastLobby();
     if (player.roomId) broadcastRoom(player.roomId);
@@ -3098,6 +3113,7 @@ io.on("connection", (socket) => {
       refreshNameWarState(target, now);
       target.displayName = formatDisplayName(target);
       refreshPlayerSnapshots(target);
+      broadcastPlayerUpdate(target);
       reply?.({ ok: true });
       broadcastLobby();
       if (target.roomId) broadcastRoom(target.roomId);
@@ -3120,6 +3136,7 @@ io.on("connection", (socket) => {
     actor.nameWarRenameCount = (actor.nameWarRenameCount || 0) + 1;
     target.displayName = formatDisplayName(target);
     refreshPlayerSnapshots(target);
+    broadcastPlayerUpdate(target);
     reply?.({ ok: true });
     broadcastLobby();
     if (target.roomId) broadcastRoom(target.roomId);
