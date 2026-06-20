@@ -3511,6 +3511,9 @@ io.on("connection", (socket) => {
       normalizedSettings.enableBot = false;
     } else if (normalizedSettings.gameId === "tictactoe") {
       if (![5, 10, 20].includes(normalizedSettings.stake)) normalizedSettings.stake = 5;
+      if (!["paper", "mint", "midnight", "candy", "arcade"].includes(String(normalizedSettings.tictactoeBoardTheme || ""))) {
+        normalizedSettings.tictactoeBoardTheme = "paper";
+      }
       normalizedSettings.enableBot = false;
     } else if (![5, 10, 20].includes(normalizedSettings.stake)) {
       normalizedSettings.stake = 5;

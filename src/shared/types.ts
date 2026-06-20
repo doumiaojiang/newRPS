@@ -206,6 +206,7 @@ export type RoomSettings = {
   rankMultiplier?: RankMultiplier;
   enableExtremeRanked?: boolean;
   othelloBoardTheme?: "classic" | "pastel" | "midnight" | "wood" | "neon";
+  tictactoeBoardTheme?: "paper" | "mint" | "midnight" | "candy" | "arcade";
 };
 
 export type PunishmentProof = {

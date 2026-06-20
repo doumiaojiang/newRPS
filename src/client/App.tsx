@@ -19,6 +19,14 @@ const othelloBoardThemes = [
   { id: "neon", name: "霓虹紫", description: "更游戏感，适合整活。", board: "#24133e", cell: "#43206f", line: "rgba(244, 157, 255, 0.34)", hover: "#5b2b94", border: "#f49dff" }
 ] as const;
 type OthelloBoardThemeId = typeof othelloBoardThemes[number]["id"];
+const tictactoeBoardThemes = [
+  { id: "paper", name: "纸面白", description: "干净清楚，像便签纸。", board: "#f0d18f", cell: "#fffaf0", line: "#d6aa55", hover: "#fff2cf", border: "#c68b32", x: "#2f6f9f", o: "#9d3860", win: "#ffe082" },
+  { id: "mint", name: "薄荷绿", description: "清爽一点，不刺眼。", board: "#8bd7bc", cell: "#effdf7", line: "#58b395", hover: "#dcf8ee", border: "#3a9c7e", x: "#176d86", o: "#b64268", win: "#bdf3cd" },
+  { id: "midnight", name: "夜间蓝", description: "晚上玩更舒服。", board: "#172339", cell: "#223553", line: "#48628d", hover: "#2f466c", border: "#6b8dd6", x: "#74c7ff", o: "#ff9fc2", win: "#4c416c" },
+  { id: "candy", name: "糖果粉", description: "偏可爱，适合轻松局。", board: "#f7b6d2", cell: "#fff4fb", line: "#ea86b5", hover: "#ffe4f2", border: "#d65c98", x: "#4f83c7", o: "#c93674", win: "#ffe6a8" },
+  { id: "arcade", name: "街机紫", description: "更亮一点，有游戏感。", board: "#24133e", cell: "#351a5b", line: "#7a42c8", hover: "#43206f", border: "#f49dff", x: "#6ff7ff", o: "#ff78d2", win: "#64427f" }
+] as const;
+type TicTacToeBoardThemeId = typeof tictactoeBoardThemes[number]["id"];
 
 function randomUuid() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -803,7 +811,8 @@ function CreateRoom({ config, me, onCreated, onCancel, onError }: { config: AppC
     enableRankMultiplier: false,
     rankMultiplier: 1,
     enableExtremeRanked: false,
-    othelloBoardTheme: "classic"
+    othelloBoardTheme: "classic",
+    tictactoeBoardTheme: "paper"
   });
   const [customRoomName, setCustomRoomName] = useState(false);
 
@@ -841,6 +850,7 @@ function patch(next: Partial<RoomSettings>) {
         merged.enableBot = false;
       }
       if (next.gameId === "tictactoe" || merged.gameId === "tictactoe") {
+        merged.tictactoeBoardTheme = merged.tictactoeBoardTheme || "paper";
         merged.enableBot = false;
       }
       if (next.punishmentSource === "player") {
@@ -964,8 +974,11 @@ function patch(next: Partial<RoomSettings>) {
                   key={game.id}
                   onClick={() => patch({ gameId: game.id })}
                 >
-                  <span>{gameIcon(game.id)} {game.name}</span>
-                  <small>{game.description}</small>
+                  <span className="game-choice-icon" aria-hidden="true">{gameIcon(game.id)}</span>
+                  <span className="game-choice-copy">
+                    <strong>{game.name}</strong>
+                    <small>{game.description}</small>
+                  </span>
                 </button>
               ))}
             </div>
@@ -991,6 +1004,40 @@ function patch(next: Partial<RoomSettings>) {
                       <i />
                       <i />
                       <i />
+                    </span>
+                    <strong>{theme.name}</strong>
+                    <small>{theme.description}</small>
+                  </button>
+                ))}
+              </div>
+            )}
+            {settings.gameId === "tictactoe" && (
+              <div className="tictactoe-theme-grid">
+                {tictactoeBoardThemes.map((theme) => (
+                  <button
+                    type="button"
+                    className={`tictactoe-theme-card ${settings.tictactoeBoardTheme === theme.id ? "active" : ""}`}
+                    key={theme.id}
+                    onClick={() => patch({ tictactoeBoardTheme: theme.id })}
+                    style={{
+                      "--ttt-board": theme.board,
+                      "--ttt-cell": theme.cell,
+                      "--ttt-line": theme.line,
+                      "--ttt-border": theme.border,
+                      "--ttt-x": theme.x,
+                      "--ttt-o": theme.o
+                    } as CSSProperties}
+                  >
+                    <span className="tictactoe-theme-preview">
+                      <i>×</i>
+                      <i />
+                      <i>○</i>
+                      <i />
+                      <i>×</i>
+                      <i />
+                      <i>○</i>
+                      <i />
+                      <i>×</i>
                     </span>
                     <strong>{theme.name}</strong>
                     <small>{theme.description}</small>
@@ -1776,6 +1823,7 @@ function TicTacToePanel({ room, me, onMove, onReady, onRestart }: { room: RoomSn
   const oSeat = xSeat ? xSeat === "A" ? "B" : "A" : null;
   const winningKeys = new Set((state?.winningLine || []).map((cell) => `${cell.row}-${cell.col}`));
   const board = state?.board || Array.from({ length: 3 }, () => Array.from({ length: 3 }, () => null));
+  const boardTheme = tictactoeThemeStyle(room.settings.tictactoeBoardTheme);
   return (
     <div className="tictactoe-panel">
       <div className="tictactoe-head">
@@ -1817,7 +1865,7 @@ function TicTacToePanel({ room, me, onMove, onReady, onRestart }: { room: RoomSn
         </div>
       )}
       {state?.ended && mySeat && room.phase === "result" && <button className="primary tictactoe-restart-button" onClick={onRestart}>再来一局</button>}
-      <div className="tictactoe-board" role="grid" aria-label="井字棋棋盘">
+      <div className="tictactoe-board" role="grid" aria-label="井字棋棋盘" style={boardTheme}>
         {board.map((row, rowIndex) => row.map((cell, colIndex) => {
           const winning = winningKeys.has(`${rowIndex}-${colIndex}`);
           return (
@@ -1976,6 +2024,20 @@ function othelloThemeStyle(themeId?: RoomSettings["othelloBoardTheme"]): CSSProp
     "--othello-line": theme.line,
     "--othello-hover": theme.hover,
     "--othello-border": theme.border
+  } as CSSProperties;
+}
+
+function tictactoeThemeStyle(themeId?: RoomSettings["tictactoeBoardTheme"]): CSSProperties {
+  const theme = tictactoeBoardThemes.find((item) => item.id === themeId) || tictactoeBoardThemes[0];
+  return {
+    "--ttt-board": theme.board,
+    "--ttt-cell": theme.cell,
+    "--ttt-line": theme.line,
+    "--ttt-hover": theme.hover,
+    "--ttt-border": theme.border,
+    "--ttt-x": theme.x,
+    "--ttt-o": theme.o,
+    "--ttt-win": theme.win
   } as CSSProperties;
 }
 
