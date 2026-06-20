@@ -9,6 +9,7 @@ const playerSecretKey = "rps-player-secret";
 const dailyAnnouncementKey = "rps-online-daily-announcement";
 const defaultRoomName = "新的锤子剪刀布房间";
 const defaultOthelloRoomName = "新的黑白棋房间";
+const defaultTicTacToeRoomName = "新的井字棋房间";
 const maxImageUploadBytes = 8 * 1024 * 1024;
 const othelloBoardThemes = [
   { id: "classic", name: "经典绿", description: "传统棋盘，最清楚耐看。", board: "#2f8a64", cell: "#38a474", line: "rgba(18, 72, 52, 0.55)", hover: "#45b883", border: "#2f7a5c" },
@@ -833,10 +834,13 @@ function patch(next: Partial<RoomSettings>) {
     setSettings((old) => {
       const merged = { ...old, ...next };
       if (!customRoomName && next.gameId) {
-        merged.name = next.gameId === "othello" ? defaultOthelloRoomName : defaultRoomName;
+        merged.name = next.gameId === "othello" ? defaultOthelloRoomName : next.gameId === "tictactoe" ? defaultTicTacToeRoomName : defaultRoomName;
       }
       if (next.gameId === "othello" || merged.gameId === "othello") {
         merged.othelloBoardTheme = merged.othelloBoardTheme || "classic";
+        merged.enableBot = false;
+      }
+      if (next.gameId === "tictactoe" || merged.gameId === "tictactoe") {
         merged.enableBot = false;
       }
       if (next.punishmentSource === "player") {
@@ -882,6 +886,9 @@ function patch(next: Partial<RoomSettings>) {
           merged.enableRankMultiplier = false;
           merged.rankMultiplier = 1;
         }
+      } else if (merged.gameId === "tictactoe") {
+        if (!([5, 10, 20] as const).includes(merged.stake as 5 | 10 | 20)) merged.stake = 5;
+        merged.enableBot = false;
       } else if (!([5, 10, 20] as const).includes(merged.stake as 5 | 10 | 20)) {
         merged.stake = 5;
       }
@@ -957,12 +964,13 @@ function patch(next: Partial<RoomSettings>) {
                   key={game.id}
                   onClick={() => patch({ gameId: game.id })}
                 >
-                  <span>{game.id === "othello" ? "⚫⚪" : "✊✌️🖐️"} {game.name}</span>
+                  <span>{gameIcon(game.id)} {game.name}</span>
                   <small>{game.description}</small>
                 </button>
               ))}
             </div>
             {settings.gameId === "othello" && <p className="hint">黑白棋支持真人 1v1、观战、聊天、排位和惩罚；Bot 不开放，排位房会支持白给/上贡结算。</p>}
+            {settings.gameId === "tictactoe" && <p className="hint">井字棋支持真人 1v1、观战、聊天、排位和惩罚；双方准备后随机 X/O 先手，Bot 暂不开放。</p>}
             {settings.gameId === "othello" && (
               <div className="othello-theme-grid">
                 {othelloBoardThemes.map((theme) => (
@@ -1006,8 +1014,9 @@ function patch(next: Partial<RoomSettings>) {
           </div>
           <div className="create-section">
             <h3>对手</h3>
-            <Toggle label="开启 Bot" value={settings.enableBot} disabled={settings.gameId === "othello" || (settings.enablePunishment && settings.punishmentSource === "player") || settings.enableRanked} onChange={(value) => patch({ enableBot: value })} />
+            <Toggle label="开启 Bot" value={settings.enableBot} disabled={settings.gameId === "othello" || settings.gameId === "tictactoe" || (settings.enablePunishment && settings.punishmentSource === "player") || settings.enableRanked} onChange={(value) => patch({ enableBot: value })} />
             {settings.gameId === "othello" && <p className="hint">黑白棋暂不支持 Bot。</p>}
+            {settings.gameId === "tictactoe" && <p className="hint">井字棋暂不支持 Bot。</p>}
             {settings.enablePunishment && settings.punishmentSource === "player" && <p className="hint">玩家发布任务模式需要真人对战，不能开启 Bot。</p>}
             {settings.enableRanked && <p className="hint">排位战需要真人对战，不能开启 Bot。</p>}
             {settings.enableBot && (
@@ -1039,12 +1048,13 @@ function patch(next: Partial<RoomSettings>) {
               </button>
               {(settings.gameId === "othello" ? ([1, 2, 5, 10] as const) : ([5, 10, 20] as const)).map((stake) => (
                 <button type="button" className={`ranked-choice-card ${settings.enableRanked && settings.stake === stake ? "active" : ""}`} key={stake} onClick={() => patch({ enableRanked: true, stake, enableExtremeRanked: Boolean(me.extremeModeEnabled) })}>
-                  <span>{settings.gameId === "othello" ? "🏆 黑白棋排位" : me.extremeModeEnabled ? "⚡ 极限排位" : "🏆 排位"} {stake}{settings.gameId === "othello" ? " 分/子" : " 分"}</span>
+                  <span>{settings.gameId === "othello" ? "🏆 黑白棋排位" : settings.gameId === "tictactoe" ? "🏆 井字棋排位" : me.extremeModeEnabled ? "⚡ 极限排位" : "🏆 排位"} {stake}{settings.gameId === "othello" ? " 分/子" : " 分"}</span>
                   <small>{settings.gameId === "othello" ? `每翻掉对方 1 子立即结算 ${stake} 分，终局不重复结算。` : me.extremeModeEnabled ? "只能创建极限排位房；非极限玩家无法进入。" : `胜利 +${stake}，失败 -${stake}；普通平局不扣分，平局双罚时双方 -${stake}。`}</small>
                 </button>
               ))}
             </div>
             {settings.gameId === "othello" && <p className="hint">黑白棋排位按实时翻子结算，可选 1/2/5/10 分/子；支持倍率和极限模式，但两者不能同时开启。</p>}
+            {settings.gameId === "tictactoe" && <p className="hint">井字棋排位按胜负固定分结算，可选 5/10/20 分；支持倍率和极限模式。</p>}
             {settings.enableBot && <p className="hint">开启 Bot 时不能选择排位战。</p>}
             {settings.enableRanked && me.extremeModeEnabled && (
               <div className="multiplier-box extreme-mode-box">
@@ -1097,6 +1107,7 @@ function patch(next: Partial<RoomSettings>) {
             <h3>惩罚</h3>
             <Toggle label="惩罚模式" value={settings.enablePunishment} onChange={(value) => patch({ enablePunishment: value })} />
             {settings.gameId === "othello" && <p className="hint">黑白棋惩罚会在终局、认输、逃跑或断线判负后触发；平局双罚开启时黑白棋平局双方都要惩罚。</p>}
+            {settings.gameId === "tictactoe" && <p className="hint">井字棋惩罚会在终局或断线判负后触发；平局双罚开启时井字棋平局双方都要惩罚。</p>}
             {settings.enablePunishment && (
               <>
                 <Select value={settings.punishmentSource || "system"} onChange={(value) => patch({ punishmentSource: value as RoomSettings["punishmentSource"] })} options={[
@@ -1200,6 +1211,12 @@ function RankMultiplierBadge({ multiplier }: { multiplier?: number }) {
   return <span className="rank-multiplier-badge">x{multiplier}</span>;
 }
 
+function gameIcon(gameId: RoomSettings["gameId"]) {
+  if (gameId === "othello") return "⚫⚪";
+  if (gameId === "tictactoe") return "❌⭕";
+  return "✊✌️🖐️";
+}
+
 function ExtremeRankedBadge({ enabled }: { enabled?: boolean }) {
   if (!enabled) return null;
   return <span className="rank-multiplier-badge extreme-ranked-badge">⚡ 极限</span>;
@@ -1287,7 +1304,7 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
   const canChoose = Boolean(mySeat && room.phase !== "punishment" && (room.phase === "choosing" || room.phase === "result") && room.seats.A && room.seats.B);
   const roomHasBot = Boolean((room.seats.A && "isBot" in room.seats.A) || (room.seats.B && "isBot" in room.seats.B));
   const canShowGiveawayButton = Boolean(mySeat && me.giveawayEnabled && !roomHasBot && room.seats.A && room.seats.B);
-  const canGoSpectate = Boolean(mySeat && room.phase !== "punishment" && !room.choices[mySeat]);
+  const canGoSpectate = Boolean(mySeat && room.phase !== "punishment" && !room.choices[mySeat] && !(room.settings.gameId === "tictactoe" && room.phase === "choosing"));
   const roomPlayers = roomPlayerList(room);
   const punishedNames = punishedPlayerNames(room);
   const iAmPunished = room.punishedPlayerIds.includes(me.id);
@@ -1299,6 +1316,8 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
     ? iAmPunished
       ? "惩罚完成前不能离开房间"
       : "离开后，服务器会自动处理你负责的审核或任务"
+    : room.settings.gameId === "tictactoe" && room.phase === "choosing" && mySeat
+      ? "井字棋对局进行中不能离开战斗席"
     : "离开房间";
 
   useEffect(() => {
@@ -1367,6 +1386,14 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
     }
   }
 
+  async function playTicTacToe(row: number, col: number) {
+    try {
+      await ask("tictactoe:move", { row, col });
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "落子失败");
+    }
+  }
+
   async function settleOthelloMove(mode: "normal" | "giveaway" | "tribute") {
     try {
       await ask("othello:settleMove", { mode });
@@ -1388,6 +1415,22 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
       await ask("othello:ready", {});
     } catch (error) {
       onError(error instanceof Error ? error.message : "准备失败");
+    }
+  }
+
+  async function readyTicTacToe() {
+    try {
+      await ask("tictactoe:ready", {});
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "准备失败");
+    }
+  }
+
+  async function restartTicTacToe() {
+    try {
+      await ask("tictactoe:restart", {});
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "重新开始失败");
     }
   }
 
@@ -1500,7 +1543,7 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
         <div className="versus">
           <span className="versus-label">⚔️ 对战比分</span>
           <strong className="score-number">{room.score.A} : {room.score.B}</strong>
-          {room.settings.gameId === "othello" ? <OthelloScore room={room} /> : <Settlement room={room} />}
+          {room.settings.gameId === "othello" ? <OthelloScore room={room} /> : room.settings.gameId === "tictactoe" ? <TicTacToeScore room={room} /> : <Settlement room={room} />}
         </div>
         <SeatView seat="B" room={room} me={me} now={now} onSit={() => act("room:sit", { seat: "B" })} />
       </div>
@@ -1508,6 +1551,8 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
         <div className="actions-panel panel">
           {room.settings.gameId === "othello" ? (
             <OthelloPanel room={room} me={me} now={now} onMove={playOthello} onSettle={settleOthelloMove} onRestart={restartOthello} onReady={readyOthello} onRequestSurrender={requestOthelloSurrender} onRespondSurrender={respondOthelloSurrender} onEscape={escapeOthello} />
+          ) : room.settings.gameId === "tictactoe" ? (
+            <TicTacToePanel room={room} me={me} onMove={playTicTacToe} onReady={readyTicTacToe} onRestart={restartTicTacToe} />
           ) : mySeat && (
             <div className="move-panel">
               <div>
@@ -1703,6 +1748,107 @@ function OthelloScore({ room }: { room: RoomSnapshot }) {
   );
 }
 
+function TicTacToeScore({ room }: { room: RoomSnapshot }) {
+  const state = room.tictactoe;
+  if (!state) {
+    const bothReady = room.ready.A && room.ready.B;
+    return <p className="settlement-placeholder">{bothReady ? "正在随机先手" : "等待准备"}</p>;
+  }
+  return (
+    <div className="tictactoe-score-mini">
+      <span>❌ {state.xSeat === "A" ? "A" : "B"}</span>
+      <span>⭕ {state.xSeat === "A" ? "B" : "A"}</span>
+      {room.settings.enableRanked && state.rankedDelta && <span className="tictactoe-live-rank">X {tictactoeDeltaText(state, "X")} / O {tictactoeDeltaText(state, "O")}</span>}
+      <strong>{state.ended ? room.resultText || "对局结束" : `轮到 ${state.xSeat === state.turn ? "X" : "O"}`}</strong>
+    </div>
+  );
+}
+
+function TicTacToePanel({ room, me, onMove, onReady, onRestart }: { room: RoomSnapshot; me: PublicPlayer; onMove: (row: number, col: number) => void; onReady: () => void; onRestart: () => void }) {
+  const state = room.tictactoe;
+  const mySeat = room.seats.A?.id === me.id ? "A" : room.seats.B?.id === me.id ? "B" : null;
+  const isMyTurn = Boolean(state && mySeat && state.turn === mySeat && room.phase === "choosing" && !state.ended);
+  const waitingForReady = room.phase === "ready" && Boolean(room.seats.A && room.seats.B);
+  const drawingFirst = waitingForReady && room.ready.A && room.ready.B;
+  const myReady = mySeat ? room.ready[mySeat] : false;
+  const turnName = state?.turn === "A" ? occupantDisplay(room.seats.A) : occupantDisplay(room.seats.B);
+  const xSeat = state?.xSeat;
+  const oSeat = xSeat ? xSeat === "A" ? "B" : "A" : null;
+  const winningKeys = new Set((state?.winningLine || []).map((cell) => `${cell.row}-${cell.col}`));
+  const board = state?.board || Array.from({ length: 3 }, () => Array.from({ length: 3 }, () => null));
+  return (
+    <div className="tictactoe-panel">
+      <div className="tictactoe-head">
+        <div>
+          <h3>❌⭕ 井字棋</h3>
+          <p className="hint">
+            {!room.seats.A || !room.seats.B
+              ? "等待两个战斗席坐满。"
+              : drawingFirst
+                ? "正在随机 X/O 先手..."
+                : waitingForReady
+                  ? "双方准备后随机决定谁执 X 先手。"
+                  : state?.ended
+                    ? room.resultText || "对局结束"
+                    : isMyTurn ? "轮到你落子。" : `轮到 ${turnName} 落子。`}
+          </p>
+        </div>
+        {state && (
+          <div className="tictactoe-turn-card">
+            <span>{state.xSeat === state.turn ? "❌ X" : "⭕ O"}</span>
+            <strong>{state.moveCount} / 9</strong>
+            {room.settings.enableRanked && state.rankedDelta && <small>本局排位：X {tictactoeDeltaText(state, "X")} / O {tictactoeDeltaText(state, "O")}</small>}
+          </div>
+        )}
+      </div>
+      {waitingForReady && (
+        <div className={`tictactoe-ready-card ${drawingFirst ? "drawing" : ""}`}>
+          <div className="tictactoe-draw-animation" aria-hidden="true">
+            <span>❌</span>
+            <span>⭕</span>
+            <span>❌</span>
+          </div>
+          <div>
+            <strong>{drawingFirst ? "抽签中..." : myReady ? "你已准备" : "准备开始"}</strong>
+            <p className="hint">A：{room.ready.A ? "已准备" : "未准备"} · B：{room.ready.B ? "已准备" : "未准备"}</p>
+          </div>
+          {mySeat && !myReady && !drawingFirst && <button className="primary" onClick={onReady}>准备</button>}
+          {mySeat && myReady && !drawingFirst && <button disabled>等待对方</button>}
+        </div>
+      )}
+      {state?.ended && mySeat && room.phase === "result" && <button className="primary tictactoe-restart-button" onClick={onRestart}>再来一局</button>}
+      <div className="tictactoe-board" role="grid" aria-label="井字棋棋盘">
+        {board.map((row, rowIndex) => row.map((cell, colIndex) => {
+          const winning = winningKeys.has(`${rowIndex}-${colIndex}`);
+          return (
+            <button
+              type="button"
+              className={`tictactoe-cell ${cell ? cell.toLowerCase() : ""} ${winning ? "winning" : ""}`}
+              key={`${rowIndex}-${colIndex}`}
+              disabled={!isMyTurn || Boolean(cell)}
+              onClick={() => onMove(rowIndex, colIndex)}
+              aria-label={`第 ${rowIndex + 1} 行第 ${colIndex + 1} 列`}
+            >
+              {cell ? (cell === "X" ? "×" : "○") : ""}
+            </button>
+          );
+        }))}
+      </div>
+      <div className="tictactoe-legend">
+        <span>❌ X：{xSeat ? occupantDisplay(room.seats[xSeat]) : "准备后随机"}</span>
+        <span>⭕ O：{oSeat ? occupantDisplay(room.seats[oSeat]) : "准备后随机"}</span>
+        <span>{mySeat ? `你在战斗席 ${mySeat}` : "你正在观战"}</span>
+      </div>
+    </div>
+  );
+}
+
+function tictactoeDeltaText(state: NonNullable<RoomSnapshot["tictactoe"]>, mark: "X" | "O") {
+  const seat = mark === "X" ? state.xSeat : state.xSeat === "A" ? "B" : "A";
+  const delta = state.rankedDelta?.[seat] || 0;
+  return `${delta >= 0 ? "+" : ""}${delta}`;
+}
+
 function OthelloPanel({ room, me, now, onMove, onSettle, onRestart, onReady, onRequestSurrender, onRespondSurrender, onEscape }: { room: RoomSnapshot; me: PublicPlayer; now: number; onMove: (row: number, col: number) => void; onSettle: (mode: "normal" | "giveaway" | "tribute") => void; onRestart: () => void; onReady: () => void; onRequestSurrender: () => void; onRespondSurrender: (accept: boolean) => void; onEscape: () => void }) {
   const state = room.othello;
   const boardTheme = othelloThemeStyle(room.settings.othelloBoardTheme);
@@ -1896,6 +2042,7 @@ function RoundHistoryCard({ item, onOpenImage }: { item: RoomSnapshot["roundHist
         </div>
         <div className="history-tags">
           {item.gameId === "othello" && <em>⚫⚪ 黑白棋</em>}
+          {item.gameId === "tictactoe" && <em>❌⭕ 井字棋</em>}
           {item.ranked && <em>🏆 {item.gameId === "othello" ? `${item.stake}分/子${item.rankMultiplier && item.rankMultiplier > 1 ? ` ×${item.rankMultiplier}` : ""}` : `${item.stake}分${item.rankMultiplier && item.rankMultiplier > 1 ? ` ×${item.rankMultiplier}` : ""}`}</em>}
           {item.extremeRanked && <em>⚡ 极限</em>}
           {item.punishedNames.length > 0 && <em>🎲 惩罚</em>}
@@ -1904,15 +2051,15 @@ function RoundHistoryCard({ item, onOpenImage }: { item: RoomSnapshot["roundHist
       <div className="history-duel">
         <div className="history-side">
           <span>{item.playerA}</span>
-          <strong>{item.gameId === "othello" ? item.othelloBlackSeat === "B" ? "⚪ 白棋" : "⚫ 黑棋" : choiceText(item.moveA)}</strong>
+          <strong>{historySeatLabel(item, "A")}</strong>
         </div>
         <div className="history-result">
-          <small>{item.gameId === "othello" && item.othelloScore ? `${item.othelloScore.black} : ${item.othelloScore.white}` : "VS"}</small>
+          <small>{item.gameId === "othello" && item.othelloScore ? `${item.othelloScore.black} : ${item.othelloScore.white}` : item.gameId === "tictactoe" ? "3 × 3" : "VS"}</small>
           <b>{item.resultLabel || historyResultText(item.result)}</b>
         </div>
         <div className="history-side">
           <span>{item.playerB}</span>
-          <strong>{item.gameId === "othello" ? item.othelloBlackSeat === "B" ? "⚫ 黑棋" : "⚪ 白棋" : choiceText(item.moveB)}</strong>
+          <strong>{historySeatLabel(item, "B")}</strong>
         </div>
       </div>
       {item.punishedNames.length > 0 && (
@@ -1956,6 +2103,16 @@ function RoundHistoryCard({ item, onOpenImage }: { item: RoomSnapshot["roundHist
       )}
     </article>
   );
+}
+
+function historySeatLabel(item: RoomSnapshot["roundHistory"][number], seat: SeatKey) {
+  if (item.gameId === "othello") {
+    return item.othelloBlackSeat === seat ? "⚫ 黑棋" : "⚪ 白棋";
+  }
+  if (item.gameId === "tictactoe") {
+    return item.tictactoeXSeat === seat ? "❌ X" : "⭕ O";
+  }
+  return choiceText(seat === "A" ? item.moveA : item.moveB);
 }
 
 function canAssignPunishmentTask(room: RoomSnapshot, currentPlayerId: string, punishedPlayerId: string, assignedBy?: string) {
@@ -2106,6 +2263,10 @@ function SeatView({ seat, room, me, now, onSit }: { seat: SeatKey; room: RoomSna
   const othelloColorLabel = room.settings.gameId === "othello" && room.othello
     ? room.othello.blackSeat === seat ? "⚫ 黑棋" : "⚪ 白棋"
     : seat === "A" ? "随机后显示黑/白" : "随机后显示黑/白";
+  const tictactoeTurn = room.settings.gameId === "tictactoe" && room.tictactoe?.turn === seat && room.phase === "choosing" && !room.tictactoe.ended;
+  const tictactoeMarkLabel = room.settings.gameId === "tictactoe" && room.tictactoe
+    ? room.tictactoe.xSeat === seat ? "❌ X" : "⭕ O"
+    : "随机后显示 X/O";
   return (
     <div className={`seat-card seat-${seat.toLowerCase()}`}>
       <div className="seat-identity">
@@ -2116,6 +2277,8 @@ function SeatView({ seat, room, me, now, onSit }: { seat: SeatKey; room: RoomSna
       <p className="choice-badge">
         {room.settings.gameId === "othello"
           ? othelloTurn ? `${othelloColorLabel}落子中` : othelloColorLabel
+          : room.settings.gameId === "tictactoe"
+            ? tictactoeTurn ? `${tictactoeMarkLabel}落子中` : tictactoeMarkLabel
           : choice ? choiceText(choice) : room.seats.A && room.seats.B ? "🤔 等待出拳" : "⏳ 等人"}
       </p>
       {occupant && !("isBot" in occupant) && <SeatStatsView stats={stats} />}
@@ -2203,6 +2366,8 @@ function lobbyRoomInfoTags(config: AppConfig, room: LobbySnapshot["rooms"][numbe
 function gameInfoTag(config: AppConfig, gameId: RoomSettings["gameId"]) {
   return gameId === "othello"
     ? roomInfoTag(config, "gameOthello", "", "⚫⚪ ")
+    : gameId === "tictactoe"
+      ? roomInfoTag(config, "gameTicTacToe", "", "❌⭕ ")
     : roomInfoTag(config, "gameRps");
 }
 
@@ -2842,6 +3007,7 @@ type AdminActionTab = "online" | "offline" | "rooms" | "announcement";
 const roomInfoTagOrder = [
   { key: "gameRps", label: "锤子剪刀布" },
   { key: "gameOthello", label: "黑白棋" },
+  { key: "gameTicTacToe", label: "井字棋" },
   { key: "phaseReady", label: "等待坐满" },
   { key: "phaseChoosing", label: "出拳中" },
   { key: "phaseResult", label: "结算中" },

@@ -1962,6 +1962,162 @@ main {
   font-weight: 800;
 }
 
+.tictactoe-panel {
+  display: grid;
+  gap: 14px;
+  justify-items: center;
+}
+
+.tictactoe-head {
+  width: min(100%, 560px);
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.tictactoe-head h3,
+.tictactoe-head p {
+  margin: 0;
+}
+
+.tictactoe-turn-card,
+.tictactoe-score-mini {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 8px 10px;
+  display: grid;
+  gap: 3px;
+  min-width: 112px;
+  text-align: center;
+}
+
+.tictactoe-score-mini {
+  grid-template-columns: repeat(2, auto);
+  justify-content: center;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.tictactoe-score-mini strong,
+.tictactoe-live-rank {
+  grid-column: 1 / -1;
+}
+
+.tictactoe-score-mini strong {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.tictactoe-live-rank,
+.tictactoe-turn-card small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.tictactoe-ready-card {
+  width: min(100%, 560px);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, #8b5cf6 34%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, #8b5cf6 9%, var(--panel-solid));
+  padding: 10px;
+}
+
+.tictactoe-ready-card strong,
+.tictactoe-ready-card p {
+  margin: 0;
+}
+
+.tictactoe-draw-animation {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.tictactoe-ready-card.drawing .tictactoe-draw-animation span {
+  animation: othello-draw-bounce 0.7s ease-in-out infinite alternate;
+}
+
+.tictactoe-ready-card.drawing .tictactoe-draw-animation span:nth-child(2) {
+  animation-delay: 0.14s;
+}
+
+.tictactoe-ready-card.drawing .tictactoe-draw-animation span:nth-child(3) {
+  animation-delay: 0.28s;
+}
+
+.tictactoe-restart-button {
+  width: min(100%, 560px);
+}
+
+.tictactoe-board {
+  width: min(100%, 560px, 66dvh);
+  aspect-ratio: 1;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border: 3px solid color-mix(in srgb, #8b5cf6 60%, var(--border));
+  border-radius: 8px;
+  overflow: hidden;
+  background: color-mix(in srgb, #8b5cf6 12%, var(--panel-solid));
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.16), 0 18px 36px rgba(91, 70, 137, 0.18);
+}
+
+.tictactoe-cell {
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid color-mix(in srgb, #8b5cf6 42%, var(--border));
+  border-radius: 0;
+  background: var(--panel-solid);
+  color: var(--page-text);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  font-size: clamp(48px, 13vmin, 118px);
+  font-weight: 900;
+  line-height: 1;
+}
+
+.tictactoe-cell.x {
+  color: #2f6f9f;
+}
+
+.tictactoe-cell.o {
+  color: #9d3860;
+}
+
+.tictactoe-cell.winning {
+  background: color-mix(in srgb, #ffd875 38%, var(--panel-solid));
+}
+
+.tictactoe-cell:not(:disabled):hover {
+  background: color-mix(in srgb, #8b5cf6 14%, var(--panel-solid));
+}
+
+.tictactoe-legend {
+  width: min(100%, 560px);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tictactoe-legend span {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-soft);
+  padding: 5px 9px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .move-panel h3,
 .chat-panel > h3,
 .sticky-panel-title {
@@ -3789,7 +3945,8 @@ main {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .othello-head {
+  .othello-head,
+  .tictactoe-head {
     align-items: stretch;
     flex-direction: column;
   }
@@ -3815,6 +3972,15 @@ main {
   }
 
   .othello-board {
+    width: min(100%, calc(100dvh - 260px));
+    min-width: min(280px, 100%);
+  }
+
+  .tictactoe-ready-card {
+    grid-template-columns: 1fr;
+  }
+
+  .tictactoe-board {
     width: min(100%, calc(100dvh - 260px));
     min-width: min(280px, 100%);
   }

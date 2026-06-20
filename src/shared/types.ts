@@ -13,9 +13,20 @@ export type Move = "rock" | "scissors" | "paper" | "giveaway" | "forfeit" | "noM
 export type RoundResult = "A" | "B" | "draw" | "doubleLoss";
 export type GamePhase = "waiting" | "ready" | "choosing" | "result" | "punishment";
 export type SeatKey = "A" | "B";
-export type GameId = "rps" | "othello";
+export type GameId = "rps" | "othello" | "tictactoe";
 export type RankStake = 1 | 2 | 5 | 10 | 20;
 export type OthelloCell = "black" | "white" | null;
+export type TicTacToeCell = "X" | "O" | null;
+export type TicTacToeState = {
+  board: TicTacToeCell[][];
+  turn: SeatKey;
+  xSeat: SeatKey;
+  moveCount: number;
+  winningLine?: Array<{ row: number; col: number }>;
+  rankedDelta?: Record<SeatKey, number>;
+  ended?: boolean;
+  winner?: RoundResult;
+};
 export type OthelloState = {
   board: OthelloCell[][];
   turn: SeatKey;
@@ -232,6 +243,8 @@ export type RoundHistoryItem = {
   gameId?: GameId;
   othelloScore?: { black: number; white: number };
   othelloBlackSeat?: SeatKey;
+  tictactoeXSeat?: SeatKey;
+  tictactoeLine?: Array<{ row: number; col: number }>;
   ranked: boolean;
   stake?: RankStake;
   rankMultiplier?: RankMultiplier;
@@ -279,6 +292,7 @@ export type RoomSnapshot = {
   choices: Partial<Record<SeatKey, Move | "hidden">>;
   revealedChoices?: Partial<Record<SeatKey, Move>>;
   othello?: OthelloState;
+  tictactoe?: TicTacToeState;
   resultText?: string;
   punishedPlayerIds: string[];
   proofs: PunishmentProof[];

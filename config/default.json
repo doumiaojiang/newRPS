@@ -128,7 +128,8 @@
   },
   "games": [
     { "id": "rps", "name": "锤子剪刀布", "description": "双方同时选择石头、剪刀、布，服务器公开结算。" },
-    { "id": "othello", "name": "黑白棋", "description": "8x8 棋盘轮流落子，服务器判断翻棋和胜负。" }
+    { "id": "othello", "name": "黑白棋", "description": "8x8 棋盘轮流落子，服务器判断翻棋和胜负。" },
+    { "id": "tictactoe", "name": "井字棋", "description": "3x3 棋盘轮流落子，先连成一线者胜。" }
   ],
   "messages": {
     "passwordWrong": "密码错误",

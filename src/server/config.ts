@@ -75,7 +75,8 @@ const defaultPlayerPunishmentRoomNamePool: RoomNamePool = {
 const defaultRoomTags = ["轻松", "认真", "排位", "惩罚", "聊天"];
 const defaultGames: AppConfig["games"] = [
   { id: "rps", name: "锤子剪刀布", description: "双方同时选择石头、剪刀、布，服务器公开结算。" },
-  { id: "othello", name: "黑白棋", description: "8x8 棋盘轮流落子，服务器判断翻棋和胜负。" }
+  { id: "othello", name: "黑白棋", description: "8x8 棋盘轮流落子，服务器判断翻棋和胜负。" },
+  { id: "tictactoe", name: "井字棋", description: "3x3 棋盘轮流落子，先连成一线者胜。" }
 ];
 const defaultNameWar = {
   penaltyPrefix: "失名者",
@@ -117,6 +118,7 @@ const defaultAccessControl = { maxOnlinePerIp: 3, maxCreatesPer10Min: 5 };
 const defaultRoomInfoTags: Record<string, RoomInfoTagStyle> = {
   gameRps: { label: "锤子剪刀布", textColor: "#4d5c6f", backgroundColor: "#eef3f8", borderColor: "#c9d6e4" },
   gameOthello: { label: "黑白棋", textColor: "#163c32", backgroundColor: "#dff7ec", borderColor: "#93d8b8" },
+  gameTicTacToe: { label: "井字棋", textColor: "#5c3b82", backgroundColor: "#f0e7ff", borderColor: "#c7a8f5" },
   phaseReady: { label: "等待坐满", textColor: "#225c8d", backgroundColor: "#e5f5ff", borderColor: "#9ed7ff" },
   phaseChoosing: { label: "出拳中", textColor: "#6b4b00", backgroundColor: "#fff3c4", borderColor: "#ffd875" },
   phaseResult: { label: "结算中", textColor: "#6b3f8d", backgroundColor: "#f1e7ff", borderColor: "#c9a9ff" },
@@ -224,14 +226,14 @@ function normalizeConfig(input: AppConfig): AppConfig {
 function normalizeGames(input?: AppConfig["games"]) {
   const games = new Map(defaultGames.map((game) => [game.id, game]));
   for (const game of input || []) {
-    if (game.id !== "rps" && game.id !== "othello") continue;
+    if (game.id !== "rps" && game.id !== "othello" && game.id !== "tictactoe") continue;
     games.set(game.id, {
       id: game.id,
       name: String(game.name || defaultGames.find((item) => item.id === game.id)?.name || game.id).trim().slice(0, 18),
       description: String(game.description || defaultGames.find((item) => item.id === game.id)?.description || "").trim().slice(0, 120)
     });
   }
-  return ["rps", "othello"].map((id) => games.get(id as AppConfig["games"][number]["id"])!) as AppConfig["games"];
+  return ["rps", "othello", "tictactoe"].map((id) => games.get(id as AppConfig["games"][number]["id"])!) as AppConfig["games"];
 }
 
 function normalizeRoomInfoTags(input?: Record<string, Partial<RoomInfoTagStyle>>) {

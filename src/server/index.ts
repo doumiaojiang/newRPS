@@ -28,7 +28,9 @@ import type {
   SeatOccupant,
   Suggestion,
   OthelloCell,
-  OthelloState
+  OthelloState,
+  TicTacToeCell,
+  TicTacToeState
 } from "../shared/types.js";
 
 type RpsMove = Exclude<Move, "giveaway" | "forfeit" | "noMove">;
@@ -86,6 +88,7 @@ type RateLimitOptions = { limit: number; windowMs: number; cooldownMs?: number }
 
 const defaultRoomName = "新的锤子剪刀布房间";
 const defaultOthelloRoomName = "新的黑白棋房间";
+const defaultTicTacToeRoomName = "新的井字棋房间";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = getRootDir();
@@ -121,7 +124,10 @@ const roomHistoryPageSize = 20;
 const giveawayBoardDurationMs = 12 * 60 * 60 * 1000;
 const broadcastMetricWindowMs = 60_000;
 const recentBroadcasts: Array<{ type: "room" | "lobby"; bytes: number; at: number }> = [];
+const lobbyBroadcastDelayMs = Math.max(50, Number(process.env.LOBBY_BROADCAST_DELAY_MS) || 300);
+const roomBroadcastDelayMs = Math.max(20, Number(process.env.ROOM_BROADCAST_DELAY_MS) || 60);
 let lobbyBroadcastTimer: NodeJS.Timeout | undefined;
+const roomBroadcastTimers = new Map<string, { timer: NodeJS.Timeout; updateLobby: boolean }>();
 type RateLimitBucket = { resetAt: number; count: number };
 const rateLimitBuckets = new Map<string, RateLimitBucket>();
 const serverStats = {
@@ -728,7 +734,7 @@ function publicPlayer(player: PlayerState): PublicPlayer {
 }
 
 function broadcastPlayerUpdate(player: PlayerState) {
-  io.emit("player:update", publicPlayer(player));
+  io.volatile.emit("player:update", publicPlayer(player));
 }
 
 function refreshPlayerSnapshots(player: PlayerState) {
@@ -836,6 +842,7 @@ function cleanupRoomIfEmpty(room: RoomState) {
   if (botTimer) clearTimeout(botTimer);
   botTimers.delete(room.id);
   clearOthelloSettlementTimer(room.id);
+  clearRoomBroadcastTimer(room.id);
   rooms.delete(room.id);
   broadcastLobby();
   return true;
@@ -925,15 +932,17 @@ function emitLobbyUpdate() {
   serverStats.lobbyBroadcasts += 1;
   serverStats.lastLobbySnapshotBytes = Buffer.byteLength(JSON.stringify(snapshot));
   recordBroadcast("lobby", serverStats.lastLobbySnapshotBytes);
-  io.emit("lobby:update", snapshot);
+  io.volatile.emit("lobby:update", snapshot);
 }
 
 function broadcastLobby() {
   if (lobbyBroadcastTimer) return;
-  lobbyBroadcastTimer = setTimeout(emitLobbyUpdate, 150);
+  lobbyBroadcastTimer = setTimeout(emitLobbyUpdate, lobbyBroadcastDelayMs);
 }
 
-function broadcastRoom(roomId: string, updateLobby = false) {
+function emitRoomUpdate(roomId: string) {
+  const pending = roomBroadcastTimers.get(roomId);
+  roomBroadcastTimers.delete(roomId);
   const room = rooms.get(roomId);
   if (!room) return;
   // 每次广播房间状态都打一个时间戳，前端可以用它丢掉过期快照。
@@ -943,8 +952,25 @@ function broadcastRoom(roomId: string, updateLobby = false) {
   serverStats.roomBroadcasts += 1;
   serverStats.lastRoomSnapshotBytes = Buffer.byteLength(JSON.stringify(snapshot));
   recordBroadcast("room", serverStats.lastRoomSnapshotBytes);
-  io.to(roomId).emit("room:update", snapshot);
-  if (updateLobby) broadcastLobby();
+  io.to(roomId).volatile.emit("room:update", snapshot);
+  if (pending?.updateLobby) broadcastLobby();
+}
+
+function broadcastRoom(roomId: string, updateLobby = false) {
+  const pending = roomBroadcastTimers.get(roomId);
+  if (pending) {
+    pending.updateLobby ||= updateLobby;
+    return;
+  }
+  const timer = setTimeout(() => emitRoomUpdate(roomId), roomBroadcastDelayMs);
+  roomBroadcastTimers.set(roomId, { timer, updateLobby });
+}
+
+function clearRoomBroadcastTimer(roomId: string) {
+  const pending = roomBroadcastTimers.get(roomId);
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  roomBroadcastTimers.delete(roomId);
 }
 
 function appendRoomChat(room: RoomState, message: ChatMessage) {
@@ -1320,6 +1346,7 @@ function createDisconnectForfeit(room: RoomState, player: PlayerState) {
   if (room.phase !== "choosing") return;
   if (room.settings.gameId === "rps" && !room.settings.enableRanked) return;
   if (room.settings.gameId === "othello" && !room.othello) return;
+  if (room.settings.gameId === "tictactoe" && !room.tictactoe) return;
   const loserSeat = seatOf(room, player.id);
   if (!loserSeat) return;
   const winnerSeat = loserSeat === "A" ? "B" : "A";
@@ -1350,6 +1377,7 @@ function applyDisconnectForfeit(room: RoomState, player: PlayerState) {
   if (!forfeit) return false;
   room.disconnectForfeits.delete(player.id);
   if (room.settings.gameId === "othello") return applyOthelloDisconnectForfeit(room, forfeit);
+  if (room.settings.gameId === "tictactoe") return applyTicTacToeDisconnectForfeit(room, forfeit);
   const winner = players.get(forfeit.winnerId);
   const loser = players.get(forfeit.loserId);
   const rankedResult = applyRankedStake(winner, loser, forfeit.stake);
@@ -1391,6 +1419,71 @@ function applyDisconnectForfeit(room: RoomState, player: PlayerState) {
     proofs: []
   });
   roomNotice(room, room.resultText);
+  return true;
+}
+
+function applyTicTacToeDisconnectForfeit(room: RoomState, forfeit: DisconnectForfeit) {
+  if (room.phase === "result" || room.tictactoe?.ended) return true;
+  const winner = players.get(forfeit.winnerId);
+  const loser = players.get(forfeit.loserId);
+  const rankedDelta = room.tictactoe?.rankedDelta || { A: 0, B: 0 };
+  let rankedText = "";
+  let streakText = "";
+  if (room.settings.enableRanked) {
+    const rankedResult = applyRankedStake(winner, loser, forfeit.stake);
+    rankedDelta[forfeit.winnerSeat] += rankedResult.winnerDelta;
+    rankedDelta[forfeit.loserSeat] += rankedResult.loserDelta;
+    resetExtremeWinStreak(loser);
+    streakText = applyExtremeWinStreakRisk(room, winner);
+    rankedText = `，排位 ${forfeit.stake} 分已结算（${forfeit.winnerName} ${rankedResult.winnerDelta >= 0 ? "+" : ""}${rankedResult.winnerDelta}，${forfeit.loserName} ${rankedResult.loserDelta}）`;
+  }
+  if (winner) winner.stats.wins += 1;
+  if (loser) loser.stats.losses += 1;
+  room.score[forfeit.winnerSeat] += 1;
+  room.seatedScore[forfeit.winnerSeat] += 1;
+  room.seatStats[forfeit.winnerSeat].wins += 1;
+  room.seatStats[forfeit.loserSeat].losses += 1;
+  room.phase = "result";
+  room.status = "playing";
+  room.tictactoe = room.tictactoe ? {
+    ...room.tictactoe,
+    rankedDelta,
+    ended: true,
+    winner: forfeit.winnerSeat
+  } : undefined;
+  room.resultText = `${forfeit.loserName} 断线超时判负，${forfeit.winnerName} 井字棋胜利${rankedText}${streakText}`;
+  const punishedPlayers = punishmentPlayersForResult(room, forfeit.winnerSeat);
+  const punishedNames = punishedPlayers.map((player) => playerShortName(player));
+  const punishment = currentPunishment(room);
+  const punishmentTasks = buildPunishmentTasks(room, punishedPlayers, forfeit.winnerSeat, punishment);
+  if (winner) refreshPlayerSnapshots(winner);
+  if (loser) refreshPlayerSnapshots(loser);
+  addRoundHistory(room, {
+    id: randomId(),
+    round: room.roundHistory.length + 1,
+    at: Date.now(),
+    playerA: forfeit.loserSeat === "A" ? forfeit.loserName : forfeit.winnerName,
+    playerB: forfeit.loserSeat === "B" ? forfeit.loserName : forfeit.winnerName,
+    moveA: forfeit.loserSeat === "A" ? "forfeit" : "noMove",
+    moveB: forfeit.loserSeat === "B" ? "forfeit" : "noMove",
+    result: forfeit.winnerSeat,
+    resultLabel: `${forfeit.winnerName}胜利`,
+    resultText: `${room.resultText}（断线判负）`,
+    gameId: "tictactoe",
+    tictactoeXSeat: room.tictactoe?.xSeat,
+    ranked: room.settings.enableRanked,
+    stake: room.settings.enableRanked ? forfeit.baseStake : undefined,
+    rankMultiplier: room.settings.enableRanked ? forfeit.rankMultiplier : undefined,
+    effectiveStake: room.settings.enableRanked ? forfeit.stake : undefined,
+    extremeRanked: Boolean(room.settings.enableExtremeRanked),
+    punishmentName: punishedNames.length ? punishmentNameForRoom(room, punishment) : undefined,
+    punishmentDescription: punishedNames.length && room.settings.punishmentSource !== "player" ? punishment?.description : undefined,
+    punishmentTasks,
+    punishedNames,
+    proofs: []
+  });
+  roomNotice(room, room.resultText);
+  setupPunishmentOrNext(room, forfeit.winnerSeat);
   return true;
 }
 
@@ -1751,6 +1844,216 @@ function othelloRankedText(state: OthelloState | undefined) {
 function othelloSettlementSummary(state: OthelloState | undefined) {
   const events = state?.settlementEvents || [];
   return events.length ? `；本局白给/上贡：${events.join("；")}` : "";
+}
+
+function initialTicTacToeBoard(): TicTacToeCell[][] {
+  return Array.from({ length: 3 }, () => Array.from({ length: 3 }, () => null));
+}
+
+function freshTicTacToeState(xSeat: SeatKey = randomSeat()): TicTacToeState {
+  return {
+    board: initialTicTacToeBoard(),
+    turn: xSeat,
+    xSeat,
+    moveCount: 0,
+    rankedDelta: { A: 0, B: 0 }
+  };
+}
+
+function tictactoeMarkForSeat(state: TicTacToeState, seat: SeatKey) {
+  return state.xSeat === seat ? "X" : "O";
+}
+
+function tictactoeSeatForMark(state: TicTacToeState, mark: Exclude<TicTacToeCell, null>): SeatKey {
+  return mark === "X" ? state.xSeat : oppositeSeat(state.xSeat);
+}
+
+const tictactoeLines = [
+  [{ row: 0, col: 0 }, { row: 0, col: 1 }, { row: 0, col: 2 }],
+  [{ row: 1, col: 0 }, { row: 1, col: 1 }, { row: 1, col: 2 }],
+  [{ row: 2, col: 0 }, { row: 2, col: 1 }, { row: 2, col: 2 }],
+  [{ row: 0, col: 0 }, { row: 1, col: 0 }, { row: 2, col: 0 }],
+  [{ row: 0, col: 1 }, { row: 1, col: 1 }, { row: 2, col: 1 }],
+  [{ row: 0, col: 2 }, { row: 1, col: 2 }, { row: 2, col: 2 }],
+  [{ row: 0, col: 0 }, { row: 1, col: 1 }, { row: 2, col: 2 }],
+  [{ row: 0, col: 2 }, { row: 1, col: 1 }, { row: 2, col: 0 }]
+] as const;
+
+function tictactoeWinningLine(board: TicTacToeCell[][]) {
+  for (const line of tictactoeLines) {
+    const [first, second, third] = line;
+    const mark = board[first.row][first.col];
+    if (mark && board[second.row][second.col] === mark && board[third.row][third.col] === mark) {
+      return line.map((cell) => ({ ...cell }));
+    }
+  }
+  return undefined;
+}
+
+function resetTicTacToeRoom(room: RoomState) {
+  room.tictactoe = undefined;
+  room.phase = "ready";
+  room.status = "waiting";
+  room.resultText = undefined;
+  room.revealedChoices = undefined;
+  room.choices = {};
+  room.disconnectForfeits.clear();
+  room.ready = { A: false, B: false };
+}
+
+function startTicTacToeRoom(room: RoomState) {
+  if (!room.seats.A || !room.seats.B) return;
+  const xSeat = randomSeat();
+  room.phase = "choosing";
+  room.status = "playing";
+  room.resultText = undefined;
+  room.choices = {};
+  room.revealedChoices = undefined;
+  room.disconnectForfeits.clear();
+  room.tictactoe = freshTicTacToeState(xSeat);
+  room.ready = { A: false, B: false };
+}
+
+function scheduleTicTacToeReadyStart(room: RoomState) {
+  if (room.settings.gameId !== "tictactoe") return;
+  if (!room.seats.A || !room.seats.B) return;
+  if (room.phase !== "ready") return;
+  if (!room.ready.A || !room.ready.B) return;
+  if (room.resultText === "正在随机井字棋先手...") return;
+  room.resultText = "正在随机井字棋先手...";
+  broadcastRoom(room.id, true);
+  setTimeout(() => {
+    const current = rooms.get(room.id);
+    if (!current || current.settings.gameId !== "tictactoe") return;
+    if (current.phase !== "ready" || !current.seats.A || !current.seats.B || !current.ready.A || !current.ready.B) return;
+    startTicTacToeRoom(current);
+    const xSeat = current.tictactoe?.xSeat || "A";
+    roomNotice(current, `随机完成：${occupantName(current.seats[xSeat])} 执 X 先手。`);
+    broadcastRoom(current.id, true);
+    broadcastLobby();
+  }, 1200);
+}
+
+function tictactoeRankedText(state: TicTacToeState | undefined) {
+  if (!state?.rankedDelta) return "";
+  const xDelta = state.rankedDelta[state.xSeat] || 0;
+  const oDelta = state.rankedDelta[oppositeSeat(state.xSeat)] || 0;
+  return `X ${xDelta >= 0 ? "+" : ""}${xDelta}，O ${oDelta >= 0 ? "+" : ""}${oDelta}`;
+}
+
+function finishTicTacToeGame(room: RoomState, result: RoundResult, winningLine?: Array<{ row: number; col: number }>) {
+  if (!room.tictactoe) return;
+  const playerA = room.seats.A && !("isBot" in room.seats.A) ? players.get(room.seats.A.id) : undefined;
+  const playerB = room.seats.B && !("isBot" in room.seats.B) ? players.get(room.seats.B.id) : undefined;
+  const rankedDelta = room.tictactoe.rankedDelta || { A: 0, B: 0 };
+  let rankedText = "";
+  let streakText = "";
+  if (result === "draw") {
+    if (playerA) playerA.stats.draws += 1;
+    if (playerB) playerB.stats.draws += 1;
+    room.seatStats.A.draws += 1;
+    room.seatStats.B.draws += 1;
+    if (room.settings.enableRanked && room.settings.tieDoublePunish) {
+      const penalty = applyRankedDrawPenaltyStake(playerA, playerB, effectiveRankedStake(room.settings));
+      rankedDelta.A += penalty.deltaA;
+      rankedDelta.B += penalty.deltaB;
+      rankedText = `（平局双扣：A ${penalty.deltaA}，B ${penalty.deltaB}）`;
+    }
+  } else if (result === "A" || result === "B") {
+    const loserSeat = oppositeSeat(result);
+    const winner = result === "A" ? playerA : playerB;
+    const loser = loserSeat === "A" ? playerA : playerB;
+    if (winner) winner.stats.wins += 1;
+    if (loser) loser.stats.losses += 1;
+    room.score[result] += 1;
+    room.seatedScore[result] += 1;
+    room.seatStats[result].wins += 1;
+    room.seatStats[loserSeat].losses += 1;
+    if (room.settings.enableRanked) {
+      const rankedResult = applyRankedStake(winner, loser, effectiveRankedStake(room.settings));
+      rankedDelta[result] += rankedResult.winnerDelta;
+      rankedDelta[loserSeat] += rankedResult.loserDelta;
+      resetExtremeWinStreak(loser);
+      streakText = applyExtremeWinStreakRisk(room, winner);
+      rankedText = `（${occupantName(room.seats[result])} ${rankedResult.winnerDelta >= 0 ? "+" : ""}${rankedResult.winnerDelta}，${occupantName(room.seats[loserSeat])} ${rankedResult.loserDelta}）`;
+    }
+  }
+  room.tictactoe = {
+    ...room.tictactoe,
+    rankedDelta,
+    winningLine,
+    ended: true,
+    winner: result
+  };
+  room.phase = "result";
+  room.status = "playing";
+  const winnerName = result === "A" || result === "B" ? occupantName(room.seats[result]) : "";
+  room.resultText = result === "draw"
+    ? `井字棋平局${rankedText}`
+    : `${winnerName} 井字棋胜利${rankedText}${streakText}`;
+  const punishedPlayers = punishmentPlayersForResult(room, result);
+  const punishedNames = punishedPlayers.map((player) => playerShortName(player));
+  const punishment = currentPunishment(room);
+  const punishmentTasks = buildPunishmentTasks(room, punishedPlayers, result, punishment);
+  if (playerA) refreshPlayerSnapshots(playerA);
+  if (playerB) refreshPlayerSnapshots(playerB);
+  addRoundHistory(room, {
+    id: randomId(),
+    round: room.roundHistory.length + 1,
+    at: Date.now(),
+    playerA: occupantName(room.seats.A),
+    playerB: occupantName(room.seats.B),
+    moveA: "noMove",
+    moveB: "noMove",
+    result,
+    resultLabel: result === "draw" ? "井字棋平局" : `${winnerName}胜利`,
+    resultText: room.resultText,
+    gameId: "tictactoe",
+    tictactoeXSeat: room.tictactoe.xSeat,
+    tictactoeLine: winningLine,
+    ranked: room.settings.enableRanked,
+    stake: room.settings.enableRanked ? room.settings.stake : undefined,
+    rankMultiplier: room.settings.enableRanked ? rankMultiplierFor(room.settings) : undefined,
+    effectiveStake: room.settings.enableRanked ? effectiveRankedStake(room.settings) : undefined,
+    extremeRanked: Boolean(room.settings.enableExtremeRanked),
+    punishmentName: punishedNames.length ? punishmentNameForRoom(room, punishment) : undefined,
+    punishmentDescription: punishedNames.length && room.settings.punishmentSource !== "player" ? punishment?.description : undefined,
+    punishmentTasks,
+    punishedNames,
+    proofs: []
+  });
+  roomNotice(room, room.resultText);
+  setupPunishmentOrNext(room, result);
+}
+
+function applyTicTacToeMove(room: RoomState, seat: SeatKey, row: number, col: number) {
+  if (!room.tictactoe) return { ok: false, error: "井字棋还没有开始" };
+  if (room.phase !== "choosing") return { ok: false, error: "当前不能落子" };
+  if (room.tictactoe.ended) return { ok: false, error: "当前井字棋对局已经结束" };
+  if (room.tictactoe.turn !== seat) return { ok: false, error: "还没轮到你落子" };
+  const safeRow = Math.trunc(Number(row));
+  const safeCol = Math.trunc(Number(col));
+  if (safeRow < 0 || safeRow >= 3 || safeCol < 0 || safeCol >= 3) return { ok: false, error: "这个位置不能落子" };
+  if (room.tictactoe.board[safeRow][safeCol]) return { ok: false, error: "这个位置已经有棋子" };
+  const mark = tictactoeMarkForSeat(room.tictactoe, seat);
+  const board = room.tictactoe.board.map((line) => [...line]);
+  board[safeRow][safeCol] = mark;
+  const moveCount = room.tictactoe.moveCount + 1;
+  const winningLine = tictactoeWinningLine(board);
+  room.tictactoe = {
+    ...room.tictactoe,
+    board,
+    moveCount,
+    turn: oppositeSeat(seat)
+  };
+  if (winningLine) {
+    finishTicTacToeGame(room, tictactoeSeatForMark(room.tictactoe, mark), winningLine);
+  } else if (moveCount >= 9) {
+    finishTicTacToeGame(room, "draw");
+  } else {
+    room.resultText = undefined;
+  }
+  return { ok: true };
 }
 
 function applyOthelloForfeitRankedFloor(room: RoomState, winnerSeat: SeatKey, loserSeat: SeatKey) {
@@ -2186,6 +2489,11 @@ function maybeStartChoosing(room: RoomState) {
     if (room.seats.A && room.seats.B) resetOthelloRoom(room);
     return;
   }
+  if (room.settings.gameId === "tictactoe") {
+    if (room.phase === "ready" || room.phase === "choosing") return;
+    if (room.seats.A && room.seats.B) resetTicTacToeRoom(room);
+    return;
+  }
   if (room.phase === "choosing" && (room.choices.A || room.choices.B)) return;
   if (!room.seats.A || !room.seats.B) return;
   room.phase = "choosing";
@@ -2200,6 +2508,10 @@ function maybeStartChoosing(room: RoomState) {
 function prepareNextChoice(room: RoomState) {
   if (room.settings.gameId === "othello") {
     resetOthelloRoom(room);
+    return;
+  }
+  if (room.settings.gameId === "tictactoe") {
+    resetTicTacToeRoom(room);
     return;
   }
   if (!room.seats.A || !room.seats.B) {
@@ -2410,6 +2722,7 @@ function roomNamePoolForSettings(settings: RoomSettings) {
 
 function generatedRoomName(settings: RoomSettings) {
   if (settings.gameId === "othello" && !settings.enablePunishment) return uniqueRoomName(defaultOthelloRoomName);
+  if (settings.gameId === "tictactoe" && !settings.enablePunishment) return uniqueRoomName(defaultTicTacToeRoomName);
   const pool = roomNamePoolForSettings(settings);
   if (!pool) return settings.name?.trim() || defaultRoomName;
   const subject = randomFrom(pool.subjects);
@@ -2421,7 +2734,7 @@ function generatedRoomName(settings: RoomSettings) {
 
 function normalizeRoomName(settings: RoomSettings) {
   const cleanName = String(settings.name || "").trim().slice(0, 24);
-  if (!cleanName || cleanName === defaultRoomName || cleanName === defaultOthelloRoomName) return generatedRoomName(settings);
+  if (!cleanName || cleanName === defaultRoomName || cleanName === defaultOthelloRoomName || cleanName === defaultTicTacToeRoomName) return generatedRoomName(settings);
   return cleanName;
 }
 
@@ -2693,6 +3006,9 @@ function canLeaveRoom(player: PlayerState, reason: LeaveReason): LeaveResult {
   if (room.settings.gameId === "othello" && room.phase === "choosing" && seatOf(room, player.id) && isProtectedReason) {
     return { ok: false, error: "黑白棋对局进行中不能离开战斗席，可以申请认输、逃跑或等待对局结束" };
   }
+  if (room.settings.gameId === "tictactoe" && room.phase === "choosing" && seatOf(room, player.id) && isProtectedReason) {
+    return { ok: false, error: "井字棋对局进行中不能离开战斗席，请等待对局结束" };
+  }
   if (room.phase !== "punishment") return { ok: true };
   const isPunished = room.punishedPlayerIds.includes(player.id);
   if (isPunished && isProtectedReason) return { ok: false, error: "惩罚完成前不能离开房间" };
@@ -2754,6 +3070,7 @@ function clearSeatForPlayer(room: RoomState, seat: SeatKey) {
     room.forgiveAdvantage = undefined;
   }
   if (room.settings.gameId === "othello" && room.phase !== "result" && room.phase !== "choosing") resetOthelloRoom(room);
+  if (room.settings.gameId === "tictactoe" && room.phase !== "result" && room.phase !== "choosing") resetTicTacToeRoom(room);
 }
 
 function leaveRoom(player: PlayerState, reason: LeaveReason = "manual"): LeaveResult {
@@ -2769,7 +3086,7 @@ function leaveRoom(player: PlayerState, reason: LeaveReason = "manual"): LeaveRe
   handlePunishmentDeparture(room, player, reason);
   if (reason === "manual" || reason === "switchRoom") roomNotice(room, `${playerShortName(player)} 离开了房间。`);
   if (reason === "adminKick") roomNotice(room, `${playerShortName(player)} 被管理员移出房间。`);
-  if (reason === "adminKick" && room.settings.gameId === "othello" && room.phase === "choosing" && seatOf(room, player.id)) {
+  if (reason === "adminKick" && (room.settings.gameId === "othello" || room.settings.gameId === "tictactoe") && room.phase === "choosing" && seatOf(room, player.id)) {
     createDisconnectForfeit(room, player);
     applyDisconnectForfeit(room, player);
   }
@@ -3173,7 +3490,7 @@ io.on("connection", (socket) => {
   guardedOn(socket, "room:create", { limit: 5, windowMs: 60_000, cooldownMs: 60_000 }, ({ settings }: { settings: RoomSettings }, reply) => {
     const player = getPlayer(socket.id);
     if (!player) return reply?.({ error: "请先进入大厅" });
-    const gameId = settings.gameId === "othello" ? "othello" : "rps";
+    const gameId = settings.gameId === "othello" || settings.gameId === "tictactoe" ? settings.gameId : "rps";
     const normalizedSettings: RoomSettings = {
       ...settings,
       gameId,
@@ -3191,6 +3508,9 @@ io.on("connection", (socket) => {
       if (!["classic", "pastel", "midnight", "wood", "neon"].includes(String(normalizedSettings.othelloBoardTheme || ""))) {
         normalizedSettings.othelloBoardTheme = "classic";
       }
+      normalizedSettings.enableBot = false;
+    } else if (normalizedSettings.gameId === "tictactoe") {
+      if (![5, 10, 20].includes(normalizedSettings.stake)) normalizedSettings.stake = 5;
       normalizedSettings.enableBot = false;
     } else if (![5, 10, 20].includes(normalizedSettings.stake)) {
       normalizedSettings.stake = 5;
@@ -3250,6 +3570,7 @@ io.on("connection", (socket) => {
       ready: { A: false, B: false },
       choices: {},
       othello: undefined,
+      tictactoe: undefined,
       punishedPlayerIds: [],
       proofs: [],
       score: { A: 0, B: 0 },
@@ -3329,6 +3650,7 @@ io.on("connection", (socket) => {
     // 如果本局已经有人出拳，已坐下的玩家不能换座躲避本局。
     // 但空战斗席仍允许观战/新加入玩家补位，否则会出现“一边已出拳，另一边空位永远坐不上”的卡房间问题。
     if (oldSeat && room.settings.gameId === "othello" && room.phase === "choosing") return reply?.({ error: "黑白棋对局进行中不能换座" });
+    if (oldSeat && room.settings.gameId === "tictactoe" && room.phase === "choosing") return reply?.({ error: "井字棋对局进行中不能换座" });
     if (oldSeat && room.phase === "choosing" && (room.choices.A || room.choices.B)) return reply?.({ error: "本局已经有人出拳，暂时不能换座" });
     if (oldSeat) {
       clearSeatForPlayer(room, oldSeat);
@@ -3341,6 +3663,7 @@ io.on("connection", (socket) => {
     room.seatStats[seat] = emptySeatStats();
     roomNotice(room, `${playerShortName(player)} 坐到战斗席 ${seat}。`);
     if (room.settings.gameId === "othello" && room.seats.A && room.seats.B && room.phase !== "choosing") resetOthelloRoom(room);
+    else if (room.settings.gameId === "tictactoe" && room.seats.A && room.seats.B && room.phase !== "choosing") resetTicTacToeRoom(room);
     else maybeStartChoosing(room);
     broadcastRoom(room.id, true);
   });
@@ -3534,6 +3857,51 @@ io.on("connection", (socket) => {
     if (room.phase === "punishment") return reply?.({ error: "惩罚完成前不能重新开始" });
     resetOthelloRoom(room);
     roomNotice(room, `${playerShortName(player)} 发起黑白棋再来一局，请双方准备。`);
+    broadcastRoom(room.id, true);
+    reply?.({ ok: true });
+  });
+
+  guardedOn(socket, "tictactoe:ready", { limit: 12, windowMs: 60_000, cooldownMs: 30_000 }, (_payload, reply) => {
+    const player = getPlayer(socket.id);
+    const room = player?.roomId ? rooms.get(player.roomId) : undefined;
+    if (!player || !room) return reply?.({ error: "你不在房间中" });
+    if (room.settings.gameId !== "tictactoe") return reply?.({ error: "当前房间不是井字棋" });
+    const seat = seatOf(room, player.id);
+    if (!seat) return reply?.({ error: "只有战斗席玩家可以准备" });
+    if (!room.seats.A || !room.seats.B) return reply?.({ error: "需要双方都坐下才能准备" });
+    if (room.phase !== "ready") return reply?.({ error: "当前不能准备" });
+    room.ready[seat] = true;
+    roomNotice(room, `${playerShortName(player)} 已准备井字棋。`);
+    reply?.({ ok: true });
+    scheduleTicTacToeReadyStart(room);
+    broadcastRoom(room.id, true);
+  });
+
+  guardedOn(socket, "tictactoe:move", { limit: 30, windowMs: 10_000, cooldownMs: 15_000 }, ({ row, col }: { row: number; col: number }, reply) => {
+    const player = getPlayer(socket.id);
+    const room = player?.roomId ? rooms.get(player.roomId) : undefined;
+    if (!player || !room) return reply?.({ error: "你不在房间中" });
+    if (room.settings.gameId !== "tictactoe") return reply?.({ error: "当前房间不是井字棋" });
+    const seat = seatOf(room, player.id);
+    if (!seat) return reply?.({ error: "只有战斗席玩家可以落子" });
+    if (!room.seats.A || !room.seats.B) return reply?.({ error: "需要双方都坐下才能开始" });
+    const result = applyTicTacToeMove(room, seat, Number(row), Number(col));
+    if (!result.ok) return reply?.({ error: result.error });
+    reply?.({ ok: true });
+    broadcastRoom(room.id, true);
+    if (room.tictactoe?.ended) broadcastLobby();
+  });
+
+  guardedOn(socket, "tictactoe:restart", { limit: 8, windowMs: 60_000, cooldownMs: 30_000 }, (_payload, reply) => {
+    const player = getPlayer(socket.id);
+    const room = player?.roomId ? rooms.get(player.roomId) : undefined;
+    if (!player || !room) return reply?.({ error: "你不在房间中" });
+    if (room.settings.gameId !== "tictactoe") return reply?.({ error: "当前房间不是井字棋" });
+    if (!seatOf(room, player.id)) return reply?.({ error: "只有战斗席玩家可以重新开始" });
+    if (!room.seats.A || !room.seats.B) return reply?.({ error: "需要双方都坐下才能重新开始" });
+    if (room.phase === "punishment") return reply?.({ error: "惩罚完成前不能重新开始" });
+    resetTicTacToeRoom(room);
+    roomNotice(room, `${playerShortName(player)} 发起井字棋再来一局，请双方准备。`);
     broadcastRoom(room.id, true);
     reply?.({ ok: true });
   });
@@ -3752,6 +4120,7 @@ io.on("connection", (socket) => {
         if (botTimer) clearTimeout(botTimer);
         botTimers.delete(roomId);
         clearOthelloSettlementTimer(roomId);
+        clearRoomBroadcastTimer(roomId);
         rooms.delete(roomId);
         roomDeleted = true;
       }
