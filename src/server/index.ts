@@ -110,6 +110,7 @@ const playersFile = path.join(dataDir, "players.json");
 const rooms = new Map<string, RoomState>();
 const botTimers = new Map<string, NodeJS.Timeout>();
 const othelloSettlementTimers = new Map<string, NodeJS.Timeout>();
+const ticTacToeGiveawayTimers = new Map<string, NodeJS.Timeout>();
 const ipCreateAttempts = new Map<string, number[]>();
 const suggestions: Suggestion[] = [];
 const lobbyChat: ChatMessage[] = [];
@@ -120,6 +121,8 @@ const socketIdsByIp = new Map<string, Set<string>>();
 const rateBuckets = new Map<string, { hits: number[]; cooldownUntil?: number }>();
 const maxRoomChatMessages = 200;
 const maxLobbyMessages = 100;
+const lobbyChannel = "lobby";
+const lobbySuggestionChannel = "lobby:suggestions";
 const roomHistoryPageSize = 20;
 const giveawayBoardDurationMs = 12 * 60 * 60 * 1000;
 const broadcastMetricWindowMs = 60_000;
@@ -281,6 +284,8 @@ app.post("/api/session", (req, res) => {
 app.use("/uploads", express.static(uploadsDir, {
   dotfiles: "deny",
   index: false,
+  maxAge: "30d",
+  immutable: true,
   setHeaders: (res) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Content-Security-Policy", "default-src 'none'; img-src 'self';");
@@ -437,8 +442,15 @@ app.get("/api/config/export", (req, res) => {
 });
 
 if (fs.existsSync(path.join(rootDir, "dist"))) {
-  app.use(express.static(path.join(rootDir, "dist")));
-  app.use((_req, res) => res.sendFile(path.join(rootDir, "dist", "index.html")));
+  app.use(express.static(path.join(rootDir, "dist"), {
+    index: false,
+    maxAge: "1y",
+    immutable: true
+  }));
+  app.use((_req, res) => {
+    res.setHeader("Cache-Control", "no-cache");
+    res.sendFile(path.join(rootDir, "dist", "index.html"));
+  });
 }
 
 app.use((error: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -756,7 +768,7 @@ function refreshAllPlayersForConfig() {
   }
 }
 
-function roomSnapshot(room: RoomState, options: { includeChat?: boolean } = {}): RoomSnapshot {
+function roomSnapshot(room: RoomState, options: { includeChat?: boolean; includeHistory?: boolean } = {}): RoomSnapshot {
   for (const id of [room.seats.A?.id, room.seats.B?.id, ...room.spectatorIds]) {
     const player = id ? players.get(id) : undefined;
     if (player && refreshNameWarState(player)) refreshPlayerSnapshots(player);
@@ -775,7 +787,8 @@ function roomSnapshot(room: RoomState, options: { includeChat?: boolean } = {}):
   } = room;
   return {
     ...publicRoom,
-    roundHistory: room.roundHistory.slice(0, roomHistoryPageSize),
+    settings: publicRoomSettings(room.settings),
+    roundHistory: options.includeHistory === false ? [] : room.roundHistory.slice(0, roomHistoryPageSize),
     roundHistoryTotal: room.roundHistory.length,
     spectators,
     choices: hideOpponentChoices(room),
@@ -794,6 +807,11 @@ function lobbySeatSummary(occupant: SeatOccupant) {
   return "isBot" in occupant
     ? { name: occupant.name, isBot: true }
     : { player: occupant };
+}
+
+function publicRoomSettings(settings: RoomSettings): RoomSettings {
+  const { password: _password, ...publicSettings } = settings;
+  return publicSettings;
 }
 
 function roomRole(room: RoomState, playerId: string) {
@@ -856,19 +874,12 @@ function hideOpponentChoices(room: RoomState) {
   return room.phase === "result" || room.phase === "punishment" ? room.revealedChoices ?? {} : hidden;
 }
 
-function lobbySnapshot(options: { includeConfig?: boolean } = {}) {
+function lobbySnapshot(options: { includeConfig?: boolean; includeSuggestions?: boolean } = {}) {
   for (const player of players.values()) {
     refreshGiveawayBoard(player);
     if (refreshNameWarState(player)) refreshPlayerSnapshots(player);
   }
   const humanPlayers = [...players.values()].map(publicPlayer);
-  const normalLeaderboard = humanPlayers
-    .filter((player) => player.stats.wins + player.stats.losses + player.stats.draws >= 5)
-    .sort((a, b) => winRate(b) - winRate(a) || b.stats.wins - a.stats.wins)
-    .slice(0, 10);
-  const rankedLeaderboard = humanPlayers
-    .filter((player) => player.connected)
-    .sort((a, b) => b.stats.rankedPoints - a.stats.rankedPoints || b.stats.wins - a.stats.wins);
   return {
     ...(options.includeConfig ? { config: publicConfig() } : {}),
     onlineCount: [...players.values()].filter((player) => player.connected).length,
@@ -901,17 +912,12 @@ function lobbySnapshot(options: { includeConfig?: boolean } = {}) {
       enableExtremeRanked: room.settings.enableExtremeRanked,
       tags: room.settings.enableTags ? room.settings.tags || [] : []
     })),
-    normalLeaderboard,
-    rankedLeaderboard,
-    suggestions,
-    lobbyChat,
+    normalLeaderboard: [],
+    rankedLeaderboard: [],
+    suggestions: options.includeSuggestions === false ? [] : suggestions.slice(0, 50),
+    lobbyChat: [],
     serverStats: { ...serverStats }
   };
-}
-
-function winRate(player: PublicPlayer) {
-  const decisive = player.stats.wins + player.stats.losses;
-  return decisive === 0 ? 0 : player.stats.wins / decisive;
 }
 
 function recordBroadcast(type: "room" | "lobby", bytes: number) {
@@ -932,7 +938,7 @@ function emitLobbyUpdate() {
   serverStats.lobbyBroadcasts += 1;
   serverStats.lastLobbySnapshotBytes = Buffer.byteLength(JSON.stringify(snapshot));
   recordBroadcast("lobby", serverStats.lastLobbySnapshotBytes);
-  io.volatile.emit("lobby:update", snapshot);
+  io.to(lobbyChannel).volatile.emit("lobby:update", snapshot);
 }
 
 function broadcastLobby() {
@@ -948,7 +954,7 @@ function emitRoomUpdate(roomId: string) {
   // 每次广播房间状态都打一个时间戳，前端可以用它丢掉过期快照。
   // 这样聊天、审核、提交证明同时发生时，不容易被旧状态覆盖。
   room.updatedAt = Date.now();
-  const snapshot = roomSnapshot(room, { includeChat: false });
+  const snapshot = roomSnapshot(room, { includeChat: false, includeHistory: false });
   serverStats.roomBroadcasts += 1;
   serverStats.lastRoomSnapshotBytes = Buffer.byteLength(JSON.stringify(snapshot));
   recordBroadcast("room", serverStats.lastRoomSnapshotBytes);
@@ -983,6 +989,10 @@ function appendLobbyChat(message: ChatMessage) {
   if (lobbyChat.length > maxLobbyMessages) lobbyChat.splice(0, lobbyChat.length - maxLobbyMessages);
 }
 
+function emitLobbyChatAppend(message: ChatMessage) {
+  io.to(lobbyChannel).emit("chat:append", message);
+}
+
 function appendSuggestion(suggestion: Suggestion) {
   suggestions.unshift(suggestion);
   if (suggestions.length > maxLobbyMessages) suggestions.splice(maxLobbyMessages);
@@ -1005,7 +1015,7 @@ function systemChat(text: string, roomId?: string) {
     io.to(roomId).emit("chat:append", message);
   } else {
     appendLobbyChat(message);
-    broadcastLobby();
+    emitLobbyChatAppend(message);
   }
 }
 
@@ -1594,7 +1604,6 @@ function applyExtremeHourlyDecay(now = Date.now()) {
   }
   if (!changed) return;
   for (const roomId of changedRoomIds) broadcastRoom(roomId);
-  broadcastLobby();
 }
 
 function scheduleExtremeHourlyDecay() {
@@ -1890,7 +1899,24 @@ function tictactoeWinningLine(board: TicTacToeCell[][]) {
   return undefined;
 }
 
+function tictactoeEmptyCells(board: TicTacToeCell[][]) {
+  const cells: Array<{ row: number; col: number }> = [];
+  for (let row = 0; row < 3; row += 1) {
+    for (let col = 0; col < 3; col += 1) {
+      if (!board[row][col]) cells.push({ row, col });
+    }
+  }
+  return cells;
+}
+
+function ticTacToeTurnPlayer(room: RoomState) {
+  const seat = room.tictactoe?.turn;
+  const occupant = seat ? room.seats[seat] : undefined;
+  return occupant && !("isBot" in occupant) ? players.get(occupant.id) : undefined;
+}
+
 function resetTicTacToeRoom(room: RoomState) {
+  clearTicTacToeGiveawayTimer(room.id);
   room.tictactoe = undefined;
   room.phase = "ready";
   room.status = "waiting";
@@ -1903,6 +1929,7 @@ function resetTicTacToeRoom(room: RoomState) {
 
 function startTicTacToeRoom(room: RoomState) {
   if (!room.seats.A || !room.seats.B) return;
+  clearTicTacToeGiveawayTimer(room.id);
   const xSeat = randomSeat();
   room.phase = "choosing";
   room.status = "playing";
@@ -1927,10 +1954,10 @@ function scheduleTicTacToeReadyStart(room: RoomState) {
     if (!current || current.settings.gameId !== "tictactoe") return;
     if (current.phase !== "ready" || !current.seats.A || !current.seats.B || !current.ready.A || !current.ready.B) return;
     startTicTacToeRoom(current);
+    prepareTicTacToeGiveawayPrompt(current);
     const xSeat = current.tictactoe?.xSeat || "A";
     roomNotice(current, `随机完成：${occupantName(current.seats[xSeat])} 执 X 先手。`);
     broadcastRoom(current.id, true);
-    broadcastLobby();
   }, 1200);
 }
 
@@ -1943,6 +1970,7 @@ function tictactoeRankedText(state: TicTacToeState | undefined) {
 
 function finishTicTacToeGame(room: RoomState, result: RoundResult, winningLine?: Array<{ row: number; col: number }>) {
   if (!room.tictactoe) return;
+  clearTicTacToeGiveawayTimer(room.id);
   const playerA = room.seats.A && !("isBot" in room.seats.A) ? players.get(room.seats.A.id) : undefined;
   const playerB = room.seats.B && !("isBot" in room.seats.B) ? players.get(room.seats.B.id) : undefined;
   const rankedDelta = room.tictactoe.rankedDelta || { A: 0, B: 0 };
@@ -2026,15 +2054,83 @@ function finishTicTacToeGame(room: RoomState, result: RoundResult, winningLine?:
   setupPunishmentOrNext(room, result);
 }
 
-function applyTicTacToeMove(room: RoomState, seat: SeatKey, row: number, col: number) {
+function clearTicTacToeGiveawayTimer(roomId: string) {
+  const timer = ticTacToeGiveawayTimers.get(roomId);
+  if (timer) clearTimeout(timer);
+  ticTacToeGiveawayTimers.delete(roomId);
+}
+
+function scheduleTicTacToeGiveawayPrompt(room: RoomState) {
+  clearTicTacToeGiveawayTimer(room.id);
+  const prompt = room.tictactoe?.giveawayPrompt;
+  if (!prompt) return;
+  const timer = setTimeout(() => {
+    ticTacToeGiveawayTimers.delete(room.id);
+    const current = rooms.get(room.id);
+    const currentPrompt = current?.tictactoe?.giveawayPrompt;
+    if (!current || !currentPrompt || currentPrompt.startedAt !== prompt.startedAt) return;
+    if (!current.tictactoe || current.phase !== "choosing" || current.tictactoe.ended) return;
+    if (current.tictactoe.turn !== currentPrompt.seat) return;
+    if (currentPrompt.forced) {
+      const forcedPlayer = ticTacToeTurnPlayer(current);
+      const result = applyTicTacToeRandomMove(current, currentPrompt.seat, "forcedGiveaway");
+      if (result.ok && forcedPlayer) {
+        roomNotice(current, `${playerShortName(forcedPlayer)} 触发强制白给，系统随机落在第 ${result.row + 1} 行第 ${result.col + 1} 列。`);
+      }
+    } else {
+      current.tictactoe = { ...current.tictactoe, giveawayPrompt: undefined };
+      current.resultText = `${occupantName(current.seats[currentPrompt.seat])} 10 秒未选择，自动不白给。`;
+    }
+    broadcastRoom(current.id, true);
+  }, Math.max(250, prompt.expiresAt - Date.now()));
+  ticTacToeGiveawayTimers.set(room.id, timer);
+}
+
+function prepareTicTacToeGiveawayPrompt(room: RoomState) {
+  if (!room.tictactoe || room.tictactoe.ended || room.phase !== "choosing") return;
+  const player = ticTacToeTurnPlayer(room);
+  const seat = room.tictactoe.turn;
+  if (!player?.giveawayEnabled || tictactoeEmptyCells(room.tictactoe.board).length === 0) {
+    clearTicTacToeGiveawayTimer(room.id);
+    room.tictactoe = { ...room.tictactoe, giveawayPrompt: undefined };
+    return;
+  }
+  const forced = shouldTriggerGiveaway(player);
+  const promptStartedAt = Date.now();
+  room.tictactoe = {
+    ...room.tictactoe,
+    giveawayPrompt: { seat, forced, startedAt: promptStartedAt, expiresAt: promptStartedAt + (forced ? 2400 : 10_000) }
+  };
+  scheduleTicTacToeGiveawayPrompt(room);
+}
+
+function applyTicTacToeRandomMove(room: RoomState, seat: SeatKey, mode: "giveaway" | "forcedGiveaway"): { ok: true; row: number; col: number } | { ok: false; error: string } {
+  if (!room.tictactoe) return { ok: false, error: "井字棋还没有开始" };
+  const cells = tictactoeEmptyCells(room.tictactoe.board);
+  if (!cells.length) return { ok: false, error: "已经没有空格可以落子" };
+  const cell = randomFrom(cells);
+  const player = ticTacToeTurnPlayer(room);
+  const result = applyTicTacToeMove(room, seat, cell.row, cell.col, mode);
+  if (result.ok && player) addGiveawayValue(player, 0.3);
+  return result.ok ? { ok: true, row: cell.row, col: cell.col } : { ok: false, error: result.error || "井字棋白给落子失败" };
+}
+
+function applyTicTacToeMove(room: RoomState, seat: SeatKey, row: number, col: number, mode: "normal" | "giveaway" | "forcedGiveaway" = "normal") {
   if (!room.tictactoe) return { ok: false, error: "井字棋还没有开始" };
   if (room.phase !== "choosing") return { ok: false, error: "当前不能落子" };
   if (room.tictactoe.ended) return { ok: false, error: "当前井字棋对局已经结束" };
   if (room.tictactoe.turn !== seat) return { ok: false, error: "还没轮到你落子" };
+  const prompt = room.tictactoe.giveawayPrompt;
+  if (prompt?.seat === seat) {
+    if (prompt.forced && mode !== "forcedGiveaway") return { ok: false, error: "强制白给中，系统正在随机落子" };
+    if (!prompt.forced && mode === "normal") return { ok: false, error: "请先选择不白给或白给落子" };
+    if (!prompt.forced && mode !== "normal" && mode !== "giveaway") return { ok: false, error: "井字棋白给状态不正确" };
+  }
   const safeRow = Math.trunc(Number(row));
   const safeCol = Math.trunc(Number(col));
   if (safeRow < 0 || safeRow >= 3 || safeCol < 0 || safeCol >= 3) return { ok: false, error: "这个位置不能落子" };
   if (room.tictactoe.board[safeRow][safeCol]) return { ok: false, error: "这个位置已经有棋子" };
+  clearTicTacToeGiveawayTimer(room.id);
   const mark = tictactoeMarkForSeat(room.tictactoe, seat);
   const board = room.tictactoe.board.map((line) => [...line]);
   board[safeRow][safeCol] = mark;
@@ -2044,14 +2140,21 @@ function applyTicTacToeMove(room: RoomState, seat: SeatKey, row: number, col: nu
     ...room.tictactoe,
     board,
     moveCount,
-    turn: oppositeSeat(seat)
+    turn: oppositeSeat(seat),
+    giveawayPrompt: undefined
   };
   if (winningLine) {
     finishTicTacToeGame(room, tictactoeSeatForMark(room.tictactoe, mark), winningLine);
   } else if (moveCount >= 9) {
     finishTicTacToeGame(room, "draw");
   } else {
-    room.resultText = undefined;
+    const playerName = occupantName(room.seats[seat]);
+    room.resultText = mode === "giveaway"
+      ? `${playerName} 选择白给落子，系统随机落在第 ${safeRow + 1} 行第 ${safeCol + 1} 列。`
+      : mode === "forcedGiveaway"
+        ? `${playerName} 触发强制白给，系统随机落在第 ${safeRow + 1} 行第 ${safeCol + 1} 列。`
+        : undefined;
+    prepareTicTacToeGiveawayPrompt(room);
   }
   return { ok: true };
 }
@@ -2105,7 +2208,6 @@ function scheduleOthelloSettlement(room: RoomState) {
     if (!current?.othello?.pendingSettlement || current.othello.pendingSettlement.id !== pending.id) return;
     settleOthelloPendingMove(current, pending.forced || "normal", "timeout");
     broadcastRoom(current.id, true);
-    broadcastLobby();
   }, Math.max(250, pending.expiresAt - Date.now()));
   othelloSettlementTimers.set(room.id, timer);
 }
@@ -2217,7 +2319,6 @@ function scheduleOthelloReadyStart(room: RoomState) {
     const blackName = occupantName(current.seats[blackSeat]);
     roomNotice(current, `随机完成：${blackName} 执黑先手。`);
     broadcastRoom(current.id, true);
-    broadcastLobby();
   }, 1400);
 }
 
@@ -2682,6 +2783,7 @@ function punishmentPlayersForResult(room: RoomState, result: RoundResult) {
 
 function addRoundHistory(room: RoomState, item: RoundHistoryItem) {
   room.roundHistory.unshift(item);
+  io.to(room.id).emit("room:historyAppend", { roomId: room.id, item, total: room.roundHistory.length });
   // 任意对局结算都会写一条战绩，这里统一触发一次惰性持久化，覆盖排位/非排位/断线判负。
   requestPersist("lazy");
 }
@@ -3097,10 +3199,11 @@ function leaveRoom(player: PlayerState, reason: LeaveReason = "manual"): LeaveRe
   if (player.socketId) io.sockets.sockets.get(player.socketId)?.leave(room.id);
   room.spectatorIds = room.spectatorIds.filter((id) => id !== player.id);
   player.roomId = undefined;
-  if (!cleanupRoomIfEmpty(room)) {
+  const roomDeleted = cleanupRoomIfEmpty(room);
+  if (!roomDeleted) {
     broadcastRoom(room.id);
+    broadcastLobby();
   }
-  broadcastLobby();
   return { ok: true };
 }
 
@@ -3114,7 +3217,8 @@ io.on("connection", (socket) => {
     next(new Error("rate limited"));
   });
   socket.emit("config:update", publicConfig());
-  socket.emit("lobby:update", lobbySnapshot({ includeConfig: true }));
+  socket.join(lobbyChannel);
+  socket.emit("lobby:update", lobbySnapshot({ includeSuggestions: true }));
 
   guardedOn(socket, "player:join", { limit: 8, windowMs: 60_000, cooldownMs: 60_000 }, ({ name, genderId, playerId, playerSecret }: { name: string; genderId: string; token?: string; playerId?: string; playerSecret?: string }, reply) => {
     const cleanName = cleanText(name, 12);
@@ -3178,9 +3282,15 @@ io.on("connection", (socket) => {
       if (!existingRoom || !roomHasPlayer(existingRoom, player.id)) player.roomId = undefined;
     }
     socket.join(player.id);
-    if (player.roomId) socket.join(player.roomId);
+    if (player.roomId) {
+      socket.leave(lobbyChannel);
+      socket.join(player.roomId);
+    } else {
+      socket.join(lobbyChannel);
+      socket.join(lobbySuggestionChannel);
+    }
     const currentRoom = player.roomId ? rooms.get(player.roomId) : undefined;
-    reply?.({ player: publicPlayer(player), token: player.token, roomId: player.roomId, room: currentRoom ? roomSnapshot(currentRoom, { includeChat: true }) : undefined });
+    reply?.({ player: publicPlayer(player), token: player.token, roomId: player.roomId, room: currentRoom ? roomSnapshot(currentRoom, { includeChat: true, includeHistory: true }) : undefined });
     if (player.persistent) requestPersist("lazy");
     broadcastLobby();
     if (player.roomId) {
@@ -3198,6 +3308,29 @@ io.on("connection", (socket) => {
     if (player) player.isAdmin = true;
     reply?.({ ok: true });
     broadcastLobby();
+  });
+
+  guardedOn(socket, "lobby:subscribe", { limit: 20, windowMs: 60_000, cooldownMs: 10_000 }, (_payload, reply) => {
+    socket.join(lobbyChannel);
+    socket.join(lobbySuggestionChannel);
+    socket.emit("lobby:update", lobbySnapshot({ includeSuggestions: true }));
+    reply?.({ ok: true });
+  });
+
+  guardedOn(socket, "lobby:unsubscribe", { limit: 20, windowMs: 60_000, cooldownMs: 10_000 }, (_payload, reply) => {
+    socket.leave(lobbyChannel);
+    socket.leave(lobbySuggestionChannel);
+    reply?.({ ok: true });
+  });
+
+  guardedOn(socket, "lobby:suggestions:subscribe", { limit: 20, windowMs: 60_000, cooldownMs: 10_000 }, (_payload, reply) => {
+    socket.join(lobbySuggestionChannel);
+    reply?.({ suggestions: suggestions.slice(0, 50) });
+  });
+
+  guardedOn(socket, "lobby:suggestions:unsubscribe", { limit: 20, windowMs: 60_000, cooldownMs: 10_000 }, (_payload, reply) => {
+    socket.leave(lobbySuggestionChannel);
+    reply?.({ ok: true });
   });
 
   guardedOn(socket, "player:updateProfile", { limit: 10, windowMs: 60_000, cooldownMs: 30_000 }, ({ name, genderId, nameWarEnabled, nameWarAllowRename, giveawayEnabled, extremeModeEnabled }: { name: string; genderId: string; nameWarEnabled?: boolean; nameWarAllowRename?: boolean; giveawayEnabled?: boolean; extremeModeEnabled?: boolean }, reply) => {
@@ -3284,7 +3417,6 @@ io.on("connection", (socket) => {
     broadcastPlayerUpdate(player);
     if (player.persistent) requestPersist("lazy");
     reply?.({ player: publicPlayer(player) });
-    broadcastLobby();
     if (player.roomId) broadcastRoom(player.roomId);
   });
 
@@ -3299,7 +3431,6 @@ io.on("connection", (socket) => {
     player.giveawayClicks = (player.giveawayClicks || 0) + 1;
     addGiveawayValue(player, 2);
     reply?.({ player: publicPlayer(player) });
-    broadcastLobby();
     broadcastRoom(room.id);
   });
 
@@ -3320,7 +3451,6 @@ io.on("connection", (socket) => {
     refreshPlayerSnapshots(player);
     broadcastPlayerUpdate(player);
     reply?.({ player: publicPlayer(player) });
-    broadcastLobby();
   });
 
   guardedOn(socket, "giveaway:vote", { limit: 30, windowMs: 60_000, cooldownMs: 30_000 }, ({ targetId, vote }: { targetId: string; vote: "like" | "dislike" }, reply) => {
@@ -3361,7 +3491,6 @@ io.on("connection", (socket) => {
     refreshPlayerSnapshots(target);
     broadcastPlayerUpdate(target);
     reply?.({ ok: true });
-    broadcastLobby();
     if (target.roomId) broadcastRoom(target.roomId);
     if (actor.roomId && actor.roomId !== target.roomId) broadcastRoom(actor.roomId);
   });
@@ -3377,7 +3506,6 @@ io.on("connection", (socket) => {
     refreshPlayerSnapshots(player);
     broadcastPlayerUpdate(player);
     reply?.({ player: publicPlayer(player) });
-    broadcastLobby();
     if (player.roomId) broadcastRoom(player.roomId);
   });
 
@@ -3396,7 +3524,6 @@ io.on("connection", (socket) => {
     refreshPlayerSnapshots(player);
     broadcastPlayerUpdate(player);
     reply?.({ player: publicPlayer(player) });
-    broadcastLobby();
     if (player.roomId) broadcastRoom(player.roomId);
   });
 
@@ -3431,7 +3558,6 @@ io.on("connection", (socket) => {
       refreshPlayerSnapshots(target);
       broadcastPlayerUpdate(target);
       reply?.({ ok: true });
-      broadcastLobby();
       if (target.roomId) broadcastRoom(target.roomId);
       if (actor.roomId && actor.roomId !== target.roomId) broadcastRoom(actor.roomId);
       return;
@@ -3454,7 +3580,6 @@ io.on("connection", (socket) => {
     refreshPlayerSnapshots(target);
     broadcastPlayerUpdate(target);
     reply?.({ ok: true });
-    broadcastLobby();
     if (target.roomId) broadcastRoom(target.roomId);
     if (actor.roomId && actor.roomId !== target.roomId) broadcastRoom(actor.roomId);
   });
@@ -3587,10 +3712,11 @@ io.on("connection", (socket) => {
     };
     rooms.set(roomId, room);
     player.roomId = roomId;
+    socket.leave(lobbyChannel);
     socket.join(roomId);
     securityLog("room_created", { sid: player.id, ip: player.ipAddress, roomId, event: "room:create", userAgent: socket.handshake.headers["user-agent"] });
     roomNotice(room, `${playerShortName(player)} 进入房间，坐在战斗席 A。`);
-    reply?.({ room: roomSnapshot(room, { includeChat: true }) });
+    reply?.({ room: roomSnapshot(room, { includeChat: true, includeHistory: true }) });
     broadcastRoom(roomId, true);
   });
 
@@ -3612,11 +3738,12 @@ io.on("connection", (socket) => {
       joinRole = "战斗席 B";
     }
     else room.spectatorIds.push(player.id);
+    socket.leave(lobbyChannel);
     socket.join(room.id);
     securityLog("room_joined", { sid: player.id, ip: player.ipAddress, roomId: room.id, event: "room:join", userAgent: socket.handshake.headers["user-agent"] });
     roomNotice(room, `${playerShortName(player)} 进入房间，位置：${joinRole}。`);
     maybeStartChoosing(room);
-    reply?.({ room: roomSnapshot(room, { includeChat: true }) });
+    reply?.({ room: roomSnapshot(room, { includeChat: true, includeHistory: true }) });
     broadcastRoom(room.id, true);
   });
 
@@ -3759,7 +3886,6 @@ io.on("connection", (socket) => {
     if (!result.ok) return reply?.({ error: result.error });
     reply?.({ ok: true });
     broadcastRoom(room.id, true);
-    broadcastLobby();
   });
 
   function requestOthelloSurrender(reply?: (payload: unknown) => void) {
@@ -3820,7 +3946,6 @@ io.on("connection", (socket) => {
     if (!result.ok) return reply?.({ error: result.error });
     reply?.({ ok: true });
     broadcastRoom(room.id, true);
-    broadcastLobby();
   });
 
   guardedOn(socket, "othello:escape", { limit: 3, windowMs: 60_000, cooldownMs: 20_000 }, (_payload, reply) => {
@@ -3847,7 +3972,6 @@ io.on("connection", (socket) => {
     if (!result.ok) return reply?.({ error: result.error });
     reply?.({ ok: true });
     broadcastRoom(room.id, true);
-    broadcastLobby();
   });
 
   guardedOn(socket, "othello:restart", { limit: 8, windowMs: 60_000, cooldownMs: 30_000 }, (_payload, reply) => {
@@ -3892,7 +4016,35 @@ io.on("connection", (socket) => {
     if (!result.ok) return reply?.({ error: result.error });
     reply?.({ ok: true });
     broadcastRoom(room.id, true);
-    if (room.tictactoe?.ended) broadcastLobby();
+  });
+
+  guardedOn(socket, "tictactoe:giveawayChoice", { limit: 20, windowMs: 10_000, cooldownMs: 15_000 }, ({ mode }: { mode: "normal" | "giveaway" }, reply) => {
+    const player = getPlayer(socket.id);
+    const room = player?.roomId ? rooms.get(player.roomId) : undefined;
+    if (!player || !room) return reply?.({ error: "你不在房间中" });
+    if (room.settings.gameId !== "tictactoe") return reply?.({ error: "当前房间不是井字棋" });
+    if (!room.tictactoe) return reply?.({ error: "井字棋还没有开始" });
+    const seat = seatOf(room, player.id);
+    if (!seat) return reply?.({ error: "只有战斗席玩家可以选择白给" });
+    if (room.phase !== "choosing" || room.tictactoe.ended) return reply?.({ error: "当前不能选择白给" });
+    if (room.tictactoe.turn !== seat) return reply?.({ error: "还没轮到你落子" });
+    const prompt = room.tictactoe.giveawayPrompt;
+    if (!prompt || prompt.seat !== seat) return reply?.({ error: "当前没有井字棋白给选择" });
+    if (prompt.forced) return reply?.({ error: "强制白给中，系统正在随机落子" });
+    if (mode !== "normal" && mode !== "giveaway") return reply?.({ error: "白给选择不正确" });
+    if (mode === "normal") {
+      clearTicTacToeGiveawayTimer(room.id);
+      room.tictactoe = { ...room.tictactoe, giveawayPrompt: undefined };
+      room.resultText = `${playerShortName(player)} 选择不白给，请正常落子。`;
+      reply?.({ ok: true });
+      broadcastRoom(room.id, true);
+      return;
+    }
+    const result = applyTicTacToeRandomMove(room, seat, "giveaway");
+    if (!result.ok) return reply?.({ error: result.error });
+    roomNotice(room, `${playerShortName(player)} 选择白给落子，系统随机落在第 ${result.row! + 1} 行第 ${result.col! + 1} 列。`);
+    reply?.({ ok: true });
+    broadcastRoom(room.id, true);
   });
 
   guardedOn(socket, "tictactoe:restart", { limit: 8, windowMs: 60_000, cooldownMs: 30_000 }, (_payload, reply) => {
@@ -4073,7 +4225,7 @@ io.on("connection", (socket) => {
       io.to(roomId).emit("chat:append", message);
     } else {
       appendLobbyChat(message);
-      broadcastLobby();
+      emitLobbyChatAppend(message);
     }
     reply?.({ ok: true });
   });
@@ -4085,7 +4237,7 @@ io.on("connection", (socket) => {
     if (!cleanSuggestionText) return reply?.({ error: "请输入留言内容" });
     const suggestion = { id: randomId(), playerId: player.id, author: player.displayName, authorPlayer: publicPlayer(player), text: cleanSuggestionText, at: Date.now() };
     appendSuggestion(suggestion);
-    io.emit("suggestion:append", suggestion);
+    io.to(lobbySuggestionChannel).emit("suggestion:append", suggestion);
     reply?.({ ok: true });
   });
 

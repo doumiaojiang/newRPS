@@ -11,12 +11,13 @@ const defaultRoomName = "新的锤子剪刀布房间";
 const defaultOthelloRoomName = "新的黑白棋房间";
 const defaultTicTacToeRoomName = "新的井字棋房间";
 const maxImageUploadBytes = 8 * 1024 * 1024;
+const leaderboardRefreshMs = 10 * 60 * 1000;
 const othelloBoardThemes = [
-  { id: "classic", name: "经典绿", description: "传统棋盘，最清楚耐看。", board: "#2f8a64", cell: "#38a474", line: "rgba(18, 72, 52, 0.55)", hover: "#45b883", border: "#2f7a5c" },
-  { id: "pastel", name: "粉蓝白", description: "柔和一点，适合夜里轻松玩。", board: "#d8f0ff", cell: "#f8d7e9", line: "rgba(81, 124, 155, 0.35)", hover: "#e9f7ff", border: "#8fc7e8" },
-  { id: "midnight", name: "深夜蓝", description: "暗色棋盘，不刺眼。", board: "#172339", cell: "#24395d", line: "rgba(159, 190, 255, 0.24)", hover: "#2f4a78", border: "#6b8dd6" },
-  { id: "wood", name: "木纹棕", description: "温暖桌游感。", board: "#9a6a3d", cell: "#b8844d", line: "rgba(78, 46, 20, 0.45)", hover: "#c89459", border: "#7a4e2a" },
-  { id: "neon", name: "霓虹紫", description: "更游戏感，适合整活。", board: "#24133e", cell: "#43206f", line: "rgba(244, 157, 255, 0.34)", hover: "#5b2b94", border: "#f49dff" }
+  { id: "classic", name: "经典绿", description: "传统棋盘，最清楚耐看。", board: "#2f8a64", cell: "#38a474", line: "rgba(18, 72, 52, 0.55)", hover: "#45b883", border: "#2f7a5c", blackDisc: "radial-gradient(circle at 32% 28%, #5f6670, #10151a 64%)", whiteDisc: "radial-gradient(circle at 32% 28%, #ffffff, #d8e1e8 70%)", blackRing: "#e3eef5", whiteRing: "#2b4f40" },
+  { id: "pastel", name: "粉蓝白", description: "柔和一点，适合夜里轻松玩。", board: "#d8f0ff", cell: "#f8d7e9", line: "rgba(81, 124, 155, 0.35)", hover: "#e9f7ff", border: "#8fc7e8", blackDisc: "radial-gradient(circle at 32% 28%, #526070, #101821 66%)", whiteDisc: "radial-gradient(circle at 32% 28%, #ffffff, #f2f7ff 72%)", blackRing: "#ffffff", whiteRing: "#6f8aa4" },
+  { id: "midnight", name: "深夜蓝", description: "暗色棋盘，不刺眼。", board: "#172339", cell: "#24395d", line: "rgba(159, 190, 255, 0.24)", hover: "#2f4a78", border: "#6b8dd6", blackDisc: "radial-gradient(circle at 32% 28%, #707b90, #090d16 66%)", whiteDisc: "radial-gradient(circle at 32% 28%, #ffffff, #d9ecff 72%)", blackRing: "#8fb2ff", whiteRing: "#ffffff" },
+  { id: "wood", name: "木纹棕", description: "温暖桌游感。", board: "#9a6a3d", cell: "#b8844d", line: "rgba(78, 46, 20, 0.45)", hover: "#c89459", border: "#7a4e2a", blackDisc: "radial-gradient(circle at 32% 28%, #695b50, #17100b 66%)", whiteDisc: "radial-gradient(circle at 32% 28%, #fff9ec, #ead6b9 72%)", blackRing: "#f0d09d", whiteRing: "#6d4324" },
+  { id: "neon", name: "霓虹紫", description: "更游戏感，适合整活。", board: "#24133e", cell: "#43206f", line: "rgba(244, 157, 255, 0.34)", hover: "#5b2b94", border: "#f49dff", blackDisc: "radial-gradient(circle at 32% 28%, #7f6d94, #0e0718 66%)", whiteDisc: "radial-gradient(circle at 32% 28%, #ffffff, #f4d7ff 72%)", blackRing: "#f49dff", whiteRing: "#ffffff" }
 ] as const;
 type OthelloBoardThemeId = typeof othelloBoardThemes[number]["id"];
 const tictactoeBoardThemes = [
@@ -275,11 +276,22 @@ function replacePlayerInLobby(lobby: LobbySnapshot, player: PublicPlayer) {
   };
 }
 
+function normalizeLobbySnapshot(snapshot: LobbySnapshot, old?: LobbySnapshot | null) {
+  const lobbyChat = snapshot.lobbyChat.length === 0 && old ? old.lobbyChat : snapshot.lobbyChat;
+  return {
+    ...snapshot,
+    lobbyChat,
+    normalLeaderboard: normalWinRatePlayers(snapshot.players),
+    rankedLeaderboard: rankedPlayers(snapshot.players)
+  };
+}
+
 export function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [lobby, setLobby] = useState<LobbySnapshot | null>(null);
   const [room, setRoom] = useState<RoomSnapshot | null>(null);
   const [me, setMe] = useState<MeState | null>(null);
+  const [leaderboardPlayersSnapshot, setLeaderboardPlayersSnapshot] = useState<PublicPlayer[]>([]);
   const [view, setView] = useState<"login" | "lobby" | "room" | "admin">(() => isAdminRoute() ? "admin" : "login");
   const [profileOpen, setProfileOpen] = useState(false);
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
@@ -290,6 +302,8 @@ export function App() {
   const [connectionState, setConnectionState] = useState<"connected" | "connecting" | "disconnected">(() => socket.connected ? "connected" : "connecting");
   const [theme, setTheme] = useState<"light" | "dark">(() => (localStorage.getItem("rps-online-theme") === "dark" ? "dark" : "light"));
   const restoreInFlightRef = useRef(false);
+  const latestLobbyPlayersRef = useRef<PublicPlayer[]>([]);
+  const leaderboardSnapshotAtRef = useRef(0);
 
   useEffect(() => {
     connectSocketWithSession().catch(() => {
@@ -324,20 +338,45 @@ export function App() {
     }
   }
 
+  function refreshLeaderboardSnapshot(players: PublicPlayer[], now = Date.now()) {
+    latestLobbyPlayersRef.current = players;
+    leaderboardSnapshotAtRef.current = now;
+    setLeaderboardPlayersSnapshot(players);
+  }
+
   useEffect(() => {
     socket.on("lobby:update", (nextLobby: LobbySnapshot) => {
       if (nextLobby.config) setConfig(nextLobby.config);
-      setLobby(nextLobby);
+      latestLobbyPlayersRef.current = nextLobby.players;
+      const now = Date.now();
+      if (!leaderboardSnapshotAtRef.current || now - leaderboardSnapshotAtRef.current >= leaderboardRefreshMs) {
+        refreshLeaderboardSnapshot(nextLobby.players, now);
+      }
+      setLobby((old) => normalizeLobbySnapshot(nextLobby, old));
     });
     socket.on("room:update", (nextRoom: RoomSnapshot) => {
       setRoom((old) => {
         if (old?.id === nextRoom.id && nextRoom.updatedAt < old.updatedAt) return old;
-        if (old?.id === nextRoom.id && nextRoom.chat.length === 0) return { ...nextRoom, chat: old.chat };
+        if (old?.id === nextRoom.id) {
+          return {
+            ...nextRoom,
+            chat: nextRoom.chat.length === 0 ? old.chat : nextRoom.chat,
+            roundHistory: nextRoom.roundHistory.length === 0 ? old.roundHistory : nextRoom.roundHistory
+          };
+        }
         return nextRoom;
       });
       if (!isAdminRoute()) setView("room");
     });
+    socket.on("room:historyAppend", ({ roomId, item, total }: { roomId: string; item: RoomSnapshot["roundHistory"][number]; total: number }) => {
+      setRoom((old) => old?.id === roomId ? {
+        ...old,
+        roundHistory: prependCappedUnique(old.roundHistory, item, 20),
+        roundHistoryTotal: total
+      } : old);
+    });
     socket.on("player:update", (player: PublicPlayer) => {
+      latestLobbyPlayersRef.current = latestLobbyPlayersRef.current.map((item) => item.id === player.id ? player : item);
       setLobby((old) => old ? replacePlayerInLobby(old, player) : old);
       setRoom((old) => old ? replacePlayerInRoom(old, player) : old);
       setMe((old) => old?.player.id === player.id ? { ...old, player, room: old.room ? replacePlayerInRoom(old.room, player) : old.room } : old);
@@ -359,6 +398,10 @@ export function App() {
       setConfig(config);
     });
     socket.on("chat:append", (message: ChatMessage) => {
+      if (!message.roomId) {
+        setLobby((old) => old ? { ...old, lobbyChat: appendCappedUnique(old.lobbyChat || [], message, 100) } : old);
+        return;
+      }
       setRoom((old) => {
         if (!old || message.roomId !== old.id) return old;
         return { ...old, chat: appendCappedUnique(old.chat, message, 200) };
@@ -391,6 +434,7 @@ export function App() {
     return () => {
       socket.off("lobby:update");
       socket.off("room:update");
+      socket.off("room:historyAppend");
       socket.off("player:update");
       socket.off("player:kicked");
       socket.off("room:closed");
@@ -403,6 +447,13 @@ export function App() {
       socket.off("connect_error");
       socket.io.off("reconnect_attempt");
     };
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (latestLobbyPlayersRef.current.length) refreshLeaderboardSnapshot(latestLobbyPlayersRef.current);
+    }, leaderboardRefreshMs);
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -463,6 +514,11 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (!me || isAdminRoute()) return;
+    ask(view === "room" ? "lobby:unsubscribe" : "lobby:subscribe", {}).catch(() => undefined);
+  }, [view, me?.player.id]);
+
+  useEffect(() => {
     if (!me || !lobby) return;
     const latest = lobby.players.find((player) => player.id === me.player.id);
     if (latest && playerSyncKey(latest) !== playerSyncKey(me.player)) {
@@ -471,6 +527,7 @@ export function App() {
   }, [lobby, me]);
 
   if (!config) return <div className="loading">正在连接服务器...</div>;
+  const leaderboardSource = leaderboardPlayersSnapshot.length ? leaderboardPlayersSnapshot : lobby?.players || [];
 
   return (
     <main>
@@ -534,7 +591,7 @@ export function App() {
       {view === "room" && !room && <section className="panel">你暂时不在房间里。</section>}
       {sponsorOpen && <SponsorPanel onClose={() => setSponsorOpen(false)} />}
       {profileOpen && me && <ProfilePanel config={config} me={me.player} onClose={() => setProfileOpen(false)} onUpdated={(player) => { setMe({ ...me, player }); localStorage.setItem("rps-online-name", player.name); localStorage.setItem("rps-online-gender", player.genderId); }} onError={setNotice} />}
-      {leaderboardOpen && lobby && <GlobalLeaderboardPanel players={lobby.players} onClose={() => setLeaderboardOpen(false)} />}
+      {leaderboardOpen && <GlobalLeaderboardPanel players={leaderboardSource} onClose={() => setLeaderboardOpen(false)} />}
     </main>
   );
 }
@@ -1008,14 +1065,18 @@ function patch(next: Partial<RoomSettings>) {
                       "--theme-board": theme.board,
                       "--theme-cell": theme.cell,
                       "--theme-line": theme.line,
-                      "--theme-border": theme.border
+                      "--theme-border": theme.border,
+                      "--theme-black-disc": theme.blackDisc,
+                      "--theme-white-disc": theme.whiteDisc,
+                      "--theme-black-ring": theme.blackRing,
+                      "--theme-white-ring": theme.whiteRing
                     } as CSSProperties}
                   >
                     <span className="othello-theme-preview">
+                      <i><b className="preview-disc black" /></i>
                       <i />
                       <i />
-                      <i />
-                      <i />
+                      <i><b className="preview-disc white" /></i>
                     </span>
                     <strong>{theme.name}</strong>
                     <small>{theme.description}</small>
@@ -1354,6 +1415,7 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
   const [now, setNow] = useState(Date.now());
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [extraHistory, setExtraHistory] = useState<RoomSnapshot["roundHistory"]>([]);
+  const [roomLobbySuggestions, setRoomLobbySuggestions] = useState<LobbySnapshot["suggestions"]>(lobbySuggestions);
   const chatListRef = useRef<HTMLDivElement | null>(null);
   const chatStickToBottomRef = useRef(true);
   const [chatStickToBottom, setChatStickToBottom] = useState(true);
@@ -1368,7 +1430,7 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
   const punishedNames = punishedPlayerNames(room);
   const iAmPunished = room.punishedPlayerIds.includes(me.id);
   const visibleChatMessages = room.chat.filter((item) => !item.expiresAt || item.expiresAt > now).slice(-80);
-  const visibleLobbyMessages = lobbySuggestions.slice(0, 50).reverse().map(suggestionToMessage);
+  const visibleLobbyMessages = roomLobbySuggestions.slice(0, 50).reverse().map(suggestionToMessage);
   const displayedChatMessages = chatTab === "room" ? visibleChatMessages : visibleLobbyMessages;
   const visibleRoundHistory = [...room.roundHistory, ...extraHistory.filter((item) => !room.roundHistory.some((fresh) => fresh.id === item.id))];
   const leaveTitle = room.phase === "punishment"
@@ -1395,6 +1457,27 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
   useEffect(() => {
     setExtraHistory([]);
   }, [room.id]);
+
+  useEffect(() => {
+    setRoomLobbySuggestions(lobbySuggestions);
+  }, [lobbySuggestions]);
+
+  useEffect(() => {
+    if (chatTab !== "lobby") {
+      ask("lobby:suggestions:unsubscribe", {}).catch(() => undefined);
+      return;
+    }
+    let cancelled = false;
+    ask<{ suggestions: LobbySnapshot["suggestions"] }>("lobby:suggestions:subscribe", {})
+      .then((result) => {
+        if (!cancelled) setRoomLobbySuggestions(result.suggestions);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      ask("lobby:suggestions:unsubscribe", {}).catch(() => undefined);
+    };
+  }, [chatTab]);
 
   useEffect(() => {
     const list = chatListRef.current;
@@ -1450,6 +1533,14 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
       await ask("tictactoe:move", { row, col });
     } catch (error) {
       onError(error instanceof Error ? error.message : "落子失败");
+    }
+  }
+
+  async function chooseTicTacToeGiveaway(mode: "normal" | "giveaway") {
+    try {
+      await ask("tictactoe:giveawayChoice", { mode });
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "白给选择失败");
     }
   }
 
@@ -1611,7 +1702,7 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
           {room.settings.gameId === "othello" ? (
             <OthelloPanel room={room} me={me} now={now} onMove={playOthello} onSettle={settleOthelloMove} onRestart={restartOthello} onReady={readyOthello} onRequestSurrender={requestOthelloSurrender} onRespondSurrender={respondOthelloSurrender} onEscape={escapeOthello} />
           ) : room.settings.gameId === "tictactoe" ? (
-            <TicTacToePanel room={room} me={me} onMove={playTicTacToe} onReady={readyTicTacToe} onRestart={restartTicTacToe} />
+            <TicTacToePanel room={room} me={me} now={now} onMove={playTicTacToe} onReady={readyTicTacToe} onRestart={restartTicTacToe} onGiveawayChoice={chooseTicTacToeGiveaway} />
           ) : mySeat && (
             <div className="move-panel">
               <div>
@@ -1680,7 +1771,7 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
                         <div className="proof">
                           <b>已提交证明</b>
                           <p>{proof.text}</p>
-                          {proof.imageUrl && <img src={proof.imageUrl} alt="惩罚证明" />}
+                          {proof.imageUrl && <img src={proof.imageUrl} alt="惩罚证明" loading="lazy" decoding="async" />}
                         </div>
                       )}
                       {canSubmit && (
@@ -1694,7 +1785,7 @@ function Room({ config, room, lobbySuggestions, me, onBack, onError }: { config:
                                 <Upload size={16} /> 上传图片证明
                                 <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => event.target.files?.[0] && uploadImage(event.target.files[0]).catch((error) => onError(error.message))} />
                               </label>
-                              {proofImage && <img className="proof-preview" src={proofImage} alt="惩罚证明" />}
+                              {proofImage && <img className="proof-preview" src={proofImage} alt="惩罚证明" loading="lazy" decoding="async" />}
                             </>
                           ) : (
                             <p className="hint">本房间关闭了图片证明，只需要提交文字证明。</p>
@@ -1823,14 +1914,20 @@ function TicTacToeScore({ room }: { room: RoomSnapshot }) {
   );
 }
 
-function TicTacToePanel({ room, me, onMove, onReady, onRestart }: { room: RoomSnapshot; me: PublicPlayer; onMove: (row: number, col: number) => void; onReady: () => void; onRestart: () => void }) {
+function TicTacToePanel({ room, me, now, onMove, onReady, onRestart, onGiveawayChoice }: { room: RoomSnapshot; me: PublicPlayer; now: number; onMove: (row: number, col: number) => void; onReady: () => void; onRestart: () => void; onGiveawayChoice: (mode: "normal" | "giveaway") => void }) {
   const state = room.tictactoe;
   const mySeat = room.seats.A?.id === me.id ? "A" : room.seats.B?.id === me.id ? "B" : null;
-  const isMyTurn = Boolean(state && mySeat && state.turn === mySeat && room.phase === "choosing" && !state.ended);
+  const giveawayPrompt = state?.giveawayPrompt;
+  const giveawayBlockingTurn = Boolean(giveawayPrompt && giveawayPrompt.seat === state?.turn);
+  const isMyGiveawayPrompt = Boolean(state && mySeat && giveawayPrompt?.seat === mySeat && room.phase === "choosing" && !state.ended);
+  const isMyTurn = Boolean(state && mySeat && state.turn === mySeat && room.phase === "choosing" && !state.ended && !giveawayBlockingTurn);
   const waitingForReady = room.phase === "ready" && Boolean(room.seats.A && room.seats.B);
   const drawingFirst = waitingForReady && room.ready.A && room.ready.B;
   const myReady = mySeat ? room.ready[mySeat] : false;
   const turnName = state?.turn === "A" ? occupantDisplay(room.seats.A) : occupantDisplay(room.seats.B);
+  const giveawayPromptName = giveawayPrompt?.seat === "A" ? occupantDisplay(room.seats.A) : occupantDisplay(room.seats.B);
+  const giveawaySecondsLeft = giveawayPrompt ? Math.max(0, Math.ceil((giveawayPrompt.expiresAt - now) / 1000)) : 0;
+  const tictactoeGiveawayGain = formatGiveawayValue(0.3);
   const xSeat = state?.xSeat;
   const oSeat = xSeat ? xSeat === "A" ? "B" : "A" : null;
   const winningKeys = new Set((state?.winningLine || []).map((cell) => `${cell.row}-${cell.col}`));
@@ -1850,6 +1947,10 @@ function TicTacToePanel({ room, me, onMove, onReady, onRestart }: { room: RoomSn
                   ? "双方准备后随机决定谁执 X 先手。"
                   : state?.ended
                     ? room.resultText || "对局结束"
+                    : giveawayPrompt?.forced
+                      ? "强制白给中，系统正在随机落子..."
+                      : giveawayPrompt
+                        ? isMyGiveawayPrompt ? "请选择不白给或白给落子。" : `等待 ${giveawayPromptName} 选择是否白给。`
                     : isMyTurn ? "轮到你落子。" : `轮到 ${turnName} 落子。`}
           </p>
         </div>
@@ -1874,6 +1975,37 @@ function TicTacToePanel({ room, me, onMove, onReady, onRestart }: { room: RoomSn
           </div>
           {mySeat && !myReady && !drawingFirst && <button className="primary" onClick={onReady}>准备</button>}
           {mySeat && myReady && !drawingFirst && <button disabled>等待对方</button>}
+        </div>
+      )}
+      {giveawayPrompt && room.phase === "choosing" && !state?.ended && (
+        <div className={`othello-settlement-card tictactoe-giveaway-card ${giveawayPrompt.forced ? "forced" : ""}`}>
+          <div>
+            <strong>{giveawayPrompt.forced ? "强制白给" : isMyGiveawayPrompt ? "选择本手结算" : "等待本手结算"}</strong>
+            <p className="hint">
+              {giveawayPrompt.forced
+                ? `${giveawayPromptName} 触发强制白给，将在 ${giveawaySecondsLeft} 秒后自动随机乱下。`
+                : isMyGiveawayPrompt
+                  ? `${giveawaySecondsLeft} 秒后自动选择不白给。`
+                  : `等待 ${giveawayPromptName} 选择，${giveawaySecondsLeft} 秒后默认不白给。`}
+            </p>
+            <p className="othello-settlement-help">
+              不白给：正常手动落子；白给：系统随机选择一个空格落子，白给值 +{tictactoeGiveawayGain}%。
+            </p>
+          </div>
+          {giveawayPrompt.forced ? (
+            <div className="othello-settlement-forced">
+              <span>🫴 白给乱下</span>
+            </div>
+          ) : isMyGiveawayPrompt ? (
+            <div className="othello-settlement-actions tictactoe-giveaway-actions">
+              <button className="primary" onClick={() => onGiveawayChoice("normal")}>不白给</button>
+              <button className="soft-button" onClick={() => onGiveawayChoice("giveaway")}>白给 +{tictactoeGiveawayGain}%</button>
+            </div>
+          ) : (
+            <div className="othello-settlement-forced">
+              <span>⏳ 等待选择</span>
+            </div>
+          )}
         </div>
       )}
       {state?.ended && mySeat && room.phase === "result" && <button className="primary tictactoe-restart-button" onClick={onRestart}>再来一局</button>}
@@ -2035,7 +2167,11 @@ function othelloThemeStyle(themeId?: RoomSettings["othelloBoardTheme"]): CSSProp
     "--othello-cell": theme.cell,
     "--othello-line": theme.line,
     "--othello-hover": theme.hover,
-    "--othello-border": theme.border
+    "--othello-border": theme.border,
+    "--othello-black-disc": theme.blackDisc,
+    "--othello-white-disc": theme.whiteDisc,
+    "--othello-black-ring": theme.blackRing,
+    "--othello-white-ring": theme.whiteRing
   } as CSSProperties;
 }
 
@@ -2155,7 +2291,7 @@ function RoundHistoryCard({ item, onOpenImage }: { item: RoomSnapshot["roundHist
                   <span>任务反馈</span>
                   <p>{proofByPlayer.get(task.playerId)!.text}</p>
                   {proofByPlayer.get(task.playerId)!.rejectReason && <small>审核：{proofByPlayer.get(task.playerId)!.rejectReason}</small>}
-                  {proofByPlayer.get(task.playerId)!.imageUrl && <button className="history-proof-image-button" onClick={() => onOpenImage(proofByPlayer.get(task.playerId)!.imageUrl!)}><img src={proofByPlayer.get(task.playerId)!.imageUrl} alt="惩罚证明" /></button>}
+                  {proofByPlayer.get(task.playerId)!.imageUrl && <button className="history-proof-image-button" onClick={() => onOpenImage(proofByPlayer.get(task.playerId)!.imageUrl!)}><img src={proofByPlayer.get(task.playerId)!.imageUrl} alt="惩罚证明" loading="lazy" decoding="async" /></button>}
                 </div>
               )}
             </div>
@@ -2170,7 +2306,7 @@ function RoundHistoryCard({ item, onOpenImage }: { item: RoomSnapshot["roundHist
               <span>{proof.playerName}</span>
               <p>{proof.text}</p>
               {proof.rejectReason && <small>审核：{proof.rejectReason}</small>}
-              {proof.imageUrl && <button className="history-proof-image-button" onClick={() => onOpenImage(proof.imageUrl!)}><img src={proof.imageUrl} alt="惩罚证明" /></button>}
+              {proof.imageUrl && <button className="history-proof-image-button" onClick={() => onOpenImage(proof.imageUrl!)}><img src={proof.imageUrl} alt="惩罚证明" loading="lazy" decoding="async" /></button>}
             </div>
           ))}
         </section>
@@ -2586,7 +2722,7 @@ function GlobalLeaderboardPanel({ players, onClose }: { players: PublicPlayer[];
         <div className="modal-title">
           <div>
             <h2><Crown size={20} /> 排行榜</h2>
-            <p className="hint">当前服务器运行期间的玩家数据，每类最多显示 50 名。</p>
+            <p className="hint">排行榜每 10 分钟刷新一次，每类最多显示 50 名。</p>
           </div>
           <button type="button" className="icon-button" onClick={onClose}>×</button>
         </div>

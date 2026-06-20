@@ -22,6 +22,12 @@ export type TicTacToeState = {
   turn: SeatKey;
   xSeat: SeatKey;
   moveCount: number;
+  giveawayPrompt?: {
+    seat: SeatKey;
+    forced?: boolean;
+    startedAt: number;
+    expiresAt: number;
+  };
   winningLine?: Array<{ row: number; col: number }>;
   rankedDelta?: Record<SeatKey, number>;
   ended?: boolean;

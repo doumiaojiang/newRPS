@@ -943,9 +943,28 @@ main {
 }
 
 .othello-theme-preview i {
-  display: block;
+  display: grid;
+  place-items: center;
   border: 1px solid var(--theme-line, rgba(18, 72, 52, 0.55));
   background: var(--theme-cell, #38a474);
+}
+
+.preview-disc {
+  width: 70%;
+  aspect-ratio: 1;
+  border-radius: 999px;
+  display: block;
+  box-shadow: inset 0 5px 7px rgba(255,255,255,0.18), inset 0 -5px 8px rgba(0,0,0,0.2), 0 2px 5px rgba(0,0,0,0.18);
+}
+
+.preview-disc.black {
+  border: 1px solid var(--theme-black-ring, #e3eef5);
+  background: var(--theme-black-disc, radial-gradient(circle at 32% 28%, #5f6670, #10151a 64%));
+}
+
+.preview-disc.white {
+  border: 1px solid var(--theme-white-ring, #2b4f40);
+  background: var(--theme-white-disc, radial-gradient(circle at 32% 28%, #ffffff, #d8e1e8 70%));
 }
 
 .othello-theme-card strong {
@@ -2135,11 +2154,13 @@ main {
 }
 
 .othello-disc.black {
-  background: radial-gradient(circle at 32% 28%, #5f6670, #10151a 64%);
+  border: 2px solid var(--othello-black-ring, #e3eef5);
+  background: var(--othello-black-disc, radial-gradient(circle at 32% 28%, #5f6670, #10151a 64%));
 }
 
 .othello-disc.white {
-  background: radial-gradient(circle at 32% 28%, #ffffff, #d8e1e8 70%);
+  border: 2px solid var(--othello-white-ring, #2b4f40);
+  background: var(--othello-white-disc, radial-gradient(circle at 32% 28%, #ffffff, #d8e1e8 70%));
 }
 
 .othello-legal-dot {
@@ -2263,6 +2284,35 @@ main {
 
 .tictactoe-restart-button {
   width: min(100%, 560px);
+}
+
+.tictactoe-giveaway-card {
+  width: min(100%, 680px);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, var(--primary) 40%, var(--border));
+  border-radius: 8px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--primary) 14%, var(--panel-solid)), color-mix(in srgb, var(--pink) 18%, var(--panel-solid)));
+  padding: 10px;
+}
+
+.tictactoe-giveaway-card.forced {
+  border-color: color-mix(in srgb, #ff8a4c 50%, var(--border));
+  background: linear-gradient(135deg, color-mix(in srgb, #ffcf7a 18%, var(--panel-solid)), color-mix(in srgb, #ff6f91 12%, var(--panel-solid)));
+}
+
+.tictactoe-giveaway-card strong,
+.tictactoe-giveaway-card p {
+  margin: 0;
+}
+
+.tictactoe-giveaway-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .tictactoe-board {
@@ -4191,8 +4241,17 @@ main {
     min-width: min(280px, 100%);
   }
 
-  .tictactoe-ready-card {
+  .tictactoe-ready-card,
+  .tictactoe-giveaway-card {
     grid-template-columns: 1fr;
+  }
+
+  .tictactoe-giveaway-actions {
+    justify-content: stretch;
+  }
+
+  .tictactoe-giveaway-actions > button {
+    flex: 1 1 140px;
   }
 
   .tictactoe-board {
