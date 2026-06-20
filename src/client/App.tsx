@@ -207,6 +207,19 @@ function playerWinRate(player: PublicPlayer) {
   return decisive === 0 ? 0 : player.stats.wins / decisive;
 }
 
+function rankedPlayers(players: PublicPlayer[]) {
+  return players
+    .filter((player) => player.connected)
+    .sort((a, b) => b.stats.rankedPoints - a.stats.rankedPoints || b.stats.wins - a.stats.wins);
+}
+
+function normalWinRatePlayers(players: PublicPlayer[]) {
+  return players
+    .filter((player) => player.stats.wins + player.stats.losses + player.stats.draws >= 5)
+    .sort((a, b) => playerWinRate(b) - playerWinRate(a) || b.stats.wins - a.stats.wins)
+    .slice(0, 10);
+}
+
 function replacePlayerInRoom(room: RoomSnapshot, player: PublicPlayer) {
   let changed = false;
   const seats = { ...room.seats };
@@ -223,6 +236,27 @@ function replacePlayerInRoom(room: RoomSnapshot, player: PublicPlayer) {
     return player;
   });
   return changed ? { ...room, seats, spectators } : room;
+}
+
+function replaceLobbyVersusPlayer(versus: LobbySnapshot["rooms"][number]["versus"], player: PublicPlayer) {
+  return {
+    A: versus.A && !("isBot" in versus.A) && versus.A.player.id === player.id ? { player } : versus.A,
+    B: versus.B && !("isBot" in versus.B) && versus.B.player.id === player.id ? { player } : versus.B
+  };
+}
+
+function replacePlayerInLobby(lobby: LobbySnapshot, player: PublicPlayer) {
+  const players = lobby.players.map((item) => item.id === player.id ? player : item);
+  return {
+    ...lobby,
+    players,
+    normalLeaderboard: normalWinRatePlayers(players),
+    rankedLeaderboard: rankedPlayers(players),
+    rooms: lobby.rooms.map((roomInfo) => ({
+      ...roomInfo,
+      versus: replaceLobbyVersusPlayer(roomInfo.versus, player)
+    }))
+  };
 }
 
 export function App() {
@@ -287,28 +321,7 @@ export function App() {
       if (!isAdminRoute()) setView("room");
     });
     socket.on("player:update", (player: PublicPlayer) => {
-      setLobby((old) => {
-        if (!old) return old;
-        const players = old.players.map((item) => item.id === player.id ? player : item);
-        return {
-          ...old,
-          players,
-          normalLeaderboard: players
-            .filter((item) => item.stats.wins + item.stats.losses + item.stats.draws >= 5)
-            .sort((a, b) => playerWinRate(b) - playerWinRate(a) || b.stats.wins - a.stats.wins)
-            .slice(0, 10),
-          rankedLeaderboard: players
-            .filter((item) => item.connected)
-            .sort((a, b) => b.stats.rankedPoints - a.stats.rankedPoints || b.stats.wins - a.stats.wins),
-          rooms: old.rooms.map((roomInfo) => ({
-          ...roomInfo,
-          versus: {
-            A: roomInfo.versus.A && !("isBot" in roomInfo.versus.A) && roomInfo.versus.A.player.id === player.id ? { player } : roomInfo.versus.A,
-            B: roomInfo.versus.B && !("isBot" in roomInfo.versus.B) && roomInfo.versus.B.player.id === player.id ? { player } : roomInfo.versus.B
-          }
-          }))
-        };
-      });
+      setLobby((old) => old ? replacePlayerInLobby(old, player) : old);
       setRoom((old) => old ? replacePlayerInRoom(old, player) : old);
       setMe((old) => old?.player.id === player.id ? { ...old, player, room: old.room ? replacePlayerInRoom(old.room, player) : old.room } : old);
     });

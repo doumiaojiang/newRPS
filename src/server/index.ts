@@ -2979,9 +2979,8 @@ io.on("connection", (socket) => {
     if (!seatOf(room, player.id)) return reply?.({ error: "只有战斗席玩家可以白给" });
     if (!isHumanVsHumanRoom(room)) return reply?.({ error: "Bot 对战不能使用白给模式" });
     if (room.phase === "punishment") return reply?.({ error: "惩罚阶段不能增加白给值" });
-    addGiveawayValue(player, 2);
     player.giveawayClicks = (player.giveawayClicks || 0) + 1;
-    broadcastPlayerUpdate(player);
+    addGiveawayValue(player, 2);
     reply?.({ player: publicPlayer(player) });
     broadcastLobby();
     broadcastRoom(room.id);
