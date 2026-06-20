@@ -1,5 +1,5 @@
 import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MutableRefObject, useEffect, useRef, useState } from "react";
-import { Crown, DoorOpen, Download, Eye, MessageCircle, Moon, Pencil, RefreshCcw, Save, Settings, Shield, Sun, Swords, Upload, UserRound, Users } from "lucide-react";
+import { Coffee, Crown, DoorOpen, Download, ExternalLink, Eye, HeartHandshake, MessageCircle, Moon, Pencil, RefreshCcw, Save, Send, Settings, Shield, Sun, Swords, Upload, UserRound, Users } from "lucide-react";
 import { socket } from "./main";
 import type { AppConfig, BotDifficulty, ChatMessage, GenderFaction, LobbySnapshot, Move, PublicPlayer, PunishmentTaskConfig, RoomInfoTagStyle, RoomNamePool, RoomSettings, RoomSnapshot, RoundResult, SeatKey, SeatOccupant } from "../shared/types";
 
@@ -27,6 +27,13 @@ const tictactoeBoardThemes = [
   { id: "arcade", name: "街机紫", description: "更亮一点，有游戏感。", board: "#24133e", cell: "#351a5b", line: "#7a42c8", hover: "#43206f", border: "#f49dff", x: "#6ff7ff", o: "#ff78d2", win: "#64427f" }
 ] as const;
 type TicTacToeBoardThemeId = typeof tictactoeBoardThemes[number]["id"];
+const sponsorLinks = [
+  { id: "x", label: "X", title: "关注 X 账号", description: "看更新、吐槽和临时公告。", href: "https://x.com/home", icon: "𝕏", tone: "#111827" },
+  { id: "telegram", label: "TG", title: "加入 TG 群", description: "一起聊天、反馈 bug、催新玩法。", href: "https://t.me/+X1Jr4GPxgIwzOWY1", icon: "✈", tone: "#229ed9" },
+  { id: "afdian", label: "爱发电", title: "爱发电支持", description: "国内赞助入口，支持一点服务器电费。", href: "https://afdian.com/a/doumiaojiang", icon: "⚡", tone: "#946cff" },
+  { id: "patreon", label: "Patreon", title: "Patreon", description: "海外赞助入口，适合长期支持。", href: "https://www.patreon.com/customize?step=navigation", icon: "P", tone: "#ff424d" },
+  { id: "coffee", label: "Coffee", title: "来一杯咖啡", description: "请作者喝杯咖啡，继续加玩法。", href: "https://buymeacoffee.com/doumiaojiang", icon: "☕", tone: "#f2b84b" }
+] as const;
 
 function randomUuid() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -276,6 +283,7 @@ export function App() {
   const [view, setView] = useState<"login" | "lobby" | "room" | "admin">(() => isAdminRoute() ? "admin" : "login");
   const [profileOpen, setProfileOpen] = useState(false);
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
+  const [sponsorOpen, setSponsorOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [announcement, setAnnouncement] = useState<AnnouncementPayload | null>(null);
   const [dailyAnnouncementOpen, setDailyAnnouncementOpen] = useState(false);
@@ -474,6 +482,9 @@ export function App() {
         </div>
         <div className="top-actions">
           {me && <PlayerBadge player={me.player} compact />}
+          <button className="soft-button top-sponsor-button" title="赞助支持" onClick={() => setSponsorOpen(true)}>
+            <HeartHandshake size={18} /> <span>赞助</span>
+          </button>
           {me && (
             <button className="soft-button top-profile-button" title="个人设置" onClick={() => setProfileOpen(true)}>
               <UserRound size={18} /> <span>个人设置</span>
@@ -521,6 +532,7 @@ export function App() {
       {view === "room" && me && room && <Room config={config} room={room} lobbySuggestions={lobby?.suggestions || []} me={me.player} onBack={() => setView("lobby")} onError={setNotice} />}
       {view === "admin" && lobby && <AdminPanel config={config} lobby={lobby} onBack={() => { if (window.location.hash === "#admin") window.location.hash = ""; setView(me ? "lobby" : "login"); }} onError={setNotice} />}
       {view === "room" && !room && <section className="panel">你暂时不在房间里。</section>}
+      {sponsorOpen && <SponsorPanel onClose={() => setSponsorOpen(false)} />}
       {profileOpen && me && <ProfilePanel config={config} me={me.player} onClose={() => setProfileOpen(false)} onUpdated={(player) => { setMe({ ...me, player }); localStorage.setItem("rps-online-name", player.name); localStorage.setItem("rps-online-gender", player.genderId); }} onError={setNotice} />}
       {leaderboardOpen && lobby && <GlobalLeaderboardPanel players={lobby.players} onClose={() => setLeaderboardOpen(false)} />}
     </main>
@@ -2493,6 +2505,48 @@ function Leaderboard({ title, players }: { title: string; players: PublicPlayer[
 }
 
 type GlobalLeaderboardTab = "positive" | "negative" | "extremePositive" | "extremeNegative" | "nameWar" | "giveaway" | "othelloWins" | "othelloCaptured" | "othelloLost";
+
+function SponsorPanel({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="modal-backdrop sponsor-backdrop" onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="sponsor-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-title sponsor-title">
+          <div>
+            <h2><HeartHandshake size={20} /> 赞助支持</h2>
+            <p className="hint">喜欢这个小站的话，可以在这里关注、进群或请作者喝杯咖啡。</p>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose}>×</button>
+        </div>
+        <div className="sponsor-hero">
+          <div className="sponsor-hero-icon"><Coffee size={30} /></div>
+          <div>
+            <strong>谢谢你愿意支持抖喵游戏屋</strong>
+            <p>赞助会优先用在服务器、域名和继续加新玩法上。也欢迎只进群提建议。</p>
+          </div>
+        </div>
+        <div className="sponsor-grid">
+          {sponsorLinks.map((item) => (
+            <a
+              className="sponsor-card"
+              href={item.href}
+              target="_blank"
+              rel="noreferrer"
+              key={item.id}
+              style={{ "--sponsor-tone": item.tone } as CSSProperties}
+            >
+              <span className="sponsor-icon" aria-hidden="true">{item.id === "telegram" ? <Send size={22} /> : item.icon}</span>
+              <span className="sponsor-copy">
+                <strong>{item.title}</strong>
+                <small>{item.description}</small>
+              </span>
+              <ExternalLink size={16} />
+            </a>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
 
 function GlobalLeaderboardPanel({ players, onClose }: { players: PublicPlayer[]; onClose: () => void }) {
   const [tab, setTab] = useState<GlobalLeaderboardTab>("positive");
